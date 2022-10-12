@@ -1,4 +1,4 @@
-function git-wj -d "fzf search worktree lists"
+function git-wjump -d "fzf search worktree lists"
   set -f out (
     git worktree list |
     grep -v '/[.]' |
