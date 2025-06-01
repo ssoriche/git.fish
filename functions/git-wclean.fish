@@ -21,8 +21,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   5. Remove worktrees only if their commits have been merged
     #
     # OPTIONS
-    #   -n, --dry-run    Show what would be removed without actually removing anything
-    #   -h, --help       Show this help message
+    #   -n, --dry-run        Show what would be removed without actually removing anything
+    #   --no-delete-branch   Keep local branches after removing worktrees
+    #   -h, --help           Show this help message
     #
     # ARGUMENTS
     #   worktrees-directory    Path to the directory containing git worktrees
@@ -34,6 +35,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   # See what would be cleaned without actually removing anything
     #   git-wclean --dry-run ~/git/myproject-worktrees
     #
+    #   # Clean up worktrees but keep the local branches
+    #   git-wclean --no-delete-branch ~/git/myproject-worktrees
+    #
     #   # Can also be called as git subcommand
     #   git wclean ~/git/myproject-worktrees
     #
@@ -43,7 +47,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   2    Git command failed
 
     # Parse command line arguments
-    argparse --name=git-wclean 'h/help' 'n/dry-run' -- $argv
+    argparse --name=git-wclean h/help n/dry-run no-delete-branch -- $argv
     or return 1
 
     # Show help if requested
@@ -130,6 +134,12 @@ function git-wclean --description "Clean up git worktrees that have been merged 
             continue
         end
 
+        # Get the current branch name for potential deletion
+        set -l current_branch_name (git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        if test $status -ne 0
+            set current_branch_name ""
+        end
+
         # Determine the upstream branch
         set -l upstream_branch (git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
         if test $status -ne 0
@@ -187,10 +197,36 @@ function git-wclean --description "Clean up git worktrees that have been merged 
 
             if set -q _flag_dry_run
                 printf "Would remove worktree: %s\n" $worktree_name
+                # Show branch deletion info
+                if test -n "$current_branch_name" -a (not set -q _flag_no_delete_branch)
+                    printf "  Would also delete local branch: %s\n" $current_branch_name
+                else if set -q _flag_no_delete_branch
+                    printf "  Would keep local branch: %s\n" $current_branch_name
+                end
             else
                 if git worktree remove --force "$worktree_name" >/dev/null 2>&1
                     printf "Removed worktree: %s\n" $worktree_name
                     set removed_count (math $removed_count + 1)
+
+                    # Remove the associated local branch unless --no-delete-branch is specified
+                    if test -n "$current_branch_name" -a (not set -q _flag_no_delete_branch)
+                        printf "  Removing associated local branch '%s'...\n" $current_branch_name
+
+                        # Check if the branch exists locally
+                        if git branch --list "$current_branch_name" | string match -q "*$current_branch_name*"
+                            if git branch -d "$current_branch_name" >/dev/null 2>&1
+                                printf "  ✓ Successfully deleted local branch: %s\n" $current_branch_name
+                            else if git branch -D "$current_branch_name" >/dev/null 2>&1
+                                printf "  ✓ Force deleted local branch: %s (had unmerged changes)\n" $current_branch_name
+                            else
+                                printf "  Warning: Failed to delete local branch '%s'.\n" $current_branch_name >&2
+                            end
+                        else
+                            printf "  Local branch '%s' not found, skipping deletion.\n" $current_branch_name
+                        end
+                    else if test -n "$current_branch_name"
+                        printf "  Keeping local branch '%s' as requested.\n" $current_branch_name
+                    end
                 else
                     printf "Error: Failed to remove worktree '%s'.\n" $worktree_name >&2
                     set skipped_count (math $skipped_count + 1)

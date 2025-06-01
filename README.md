@@ -83,11 +83,12 @@ Clean up worktrees whose commits have been merged to upstream.
 ```fish
 # Clean up merged worktrees
 git wclean ~/git/myproject-worktrees
-# Or with abbreviation: g wclean ~/git/myproject-worktrees
 
 # Preview what would be removed
 git wclean --dry-run ~/worktrees
-# Or: g wclean --dry-run ~/worktrees
+
+# Clean worktrees but keep local branches
+git wclean --no-delete-branch ~/worktrees
 
 # Get help
 git wclean --help
@@ -98,6 +99,7 @@ git wclean --help
 - Scans directory for git worktrees
 - Checks if commits are merged to upstream branch
 - Removes only safely merged worktrees
+- **Automatically deletes associated local branches** (unless `--no-delete-branch` is used)
 - Provides detailed summary of actions taken
 
 #### `git wjump` / `git-wjump`
@@ -128,14 +130,15 @@ Safely remove a single worktree after verifying commits are merged.
 ```fish
 # Remove worktree after verification
 git wrm ~/worktrees/feature-branch
-# Or with abbreviation: g wrm ~/worktrees/feature-branch
 
 # Preview what would happen
 git wrm --dry-run ~/worktrees/old-feature
-# Or: g wrm --dry-run ~/worktrees/old-feature
 
 # Force removal (use with caution!)
 git wrm --force ~/worktrees/experimental
+
+# Remove worktree but keep the local branch
+git wrm --no-delete-branch ~/worktrees/feature-branch
 ```
 
 **Features:**
@@ -143,6 +146,7 @@ git wrm --force ~/worktrees/experimental
 - Verifies commits are merged to upstream before removal
 - Smart upstream branch detection
 - Force option for override (with warnings)
+- **Automatically deletes associated local branch** (unless `--no-delete-branch` is used)
 - Clear feedback and guidance when commits aren't merged
 
 ### Utility Commands

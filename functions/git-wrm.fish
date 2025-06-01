@@ -18,25 +18,29 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   5. Remove the worktree only if the commit has been merged
     #
     # OPTIONS
-    #   -n, --dry-run    Show what would be removed without actually removing anything
-    #   -f, --force      Remove worktree even if commits are not merged upstream
-    #   -h, --help       Show this help message
+    #   -n, --dry-run        Show what would be removed without actually removing anything
+    #   -f, --force          Remove worktree even if commits are not merged upstream
+    #   --no-delete-branch   Keep the local branch after removing worktree
+    #   -h, --help           Show this help message
     #
     # ARGUMENTS
     #   worktree-path    Path to the worktree directory to remove
     #
     # EXAMPLES
     #   # Remove a worktree after verifying it's merged
-    #   git-wrm ~/git/myproject-worktrees/feature-branch
+    #   git-wrm ~/worktrees/feature-branch
     #
     #   # See what would happen without actually removing
-    #   git-wrm --dry-run ~/git/myproject-worktrees/feature-branch
+    #   git-wrm --dry-run ~/worktrees/feature-branch
     #
     #   # Force removal even if not merged (use with caution!)
-    #   git-wrm --force ~/git/myproject-worktrees/feature-branch
+    #   git-wrm --force ~/worktrees/experimental
+    #
+    #   # Remove worktree but keep the local branch
+    #   git-wrm --no-delete-branch ~/worktrees/feature-branch
     #
     #   # Can also be called as git subcommand
-    #   git wrm ~/git/myproject-worktrees/feature-branch
+    #   git wrm ~/worktrees/feature-branch
     #
     # EXIT STATUS
     #   0    Success - worktree was removed or would be removed (dry-run)
@@ -45,7 +49,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   3    Commits not merged upstream (use --force to override)
 
     # Parse command line arguments
-    argparse --name=git-wrm 'h/help' 'n/dry-run' 'f/force' -- $argv
+    argparse --name=git-wrm h/help n/dry-run f/force no-delete-branch -- $argv
     or return 1
 
     # Show help if requested
@@ -124,6 +128,12 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     # Get worktree name for removal
     set -l worktree_name (basename $worktree_path)
 
+    # Get the current branch name in the worktree for potential deletion
+    set -l current_branch_name (git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    if test $status -ne 0
+        set current_branch_name ""
+    end
+
     # Don't remove the main repository itself
     if test "$worktree_path" = "$main_repo"
         printf "Error: Cannot remove the main repository. Use a worktree path instead.\n" >&2
@@ -176,6 +186,14 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             else
                 printf "\nWould FORCE remove worktree '%s' (commits NOT merged - forced).\n" $worktree_name
             end
+
+            # Show branch deletion info
+            if test -n "$current_branch_name" -a (not set -q _flag_no_delete_branch)
+                printf "Would also delete local branch: %s\n" $current_branch_name
+            else if set -q _flag_no_delete_branch
+                printf "Would keep local branch: %s\n" $current_branch_name
+            end
+
             popd >/dev/null
             return 0
         else
@@ -186,6 +204,27 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             printf "Removing worktree '%s'...\n" $worktree_name
             if git worktree remove --force "$worktree_name" >/dev/null 2>&1
                 printf "✓ Successfully removed worktree: %s\n" $worktree_name
+
+                # Remove the associated local branch unless --no-delete-branch is specified
+                if test -n "$current_branch_name" -a (not set -q _flag_no_delete_branch)
+                    printf "Removing associated local branch '%s'...\n" $current_branch_name
+
+                    # Check if the branch exists locally
+                    if git branch --list "$current_branch_name" | string match -q "*$current_branch_name*"
+                        if git branch -d "$current_branch_name" >/dev/null 2>&1
+                            printf "✓ Successfully deleted local branch: %s\n" $current_branch_name
+                        else if git branch -D "$current_branch_name" >/dev/null 2>&1
+                            printf "✓ Force deleted local branch: %s (had unmerged changes)\n" $current_branch_name
+                        else
+                            printf "Warning: Failed to delete local branch '%s'. You may need to delete it manually.\n" $current_branch_name >&2
+                        end
+                    else
+                        printf "Local branch '%s' not found, skipping deletion.\n" $current_branch_name
+                    end
+                else if test -n "$current_branch_name"
+                    printf "Keeping local branch '%s' as requested.\n" $current_branch_name
+                end
+
                 popd >/dev/null
                 return 0
             else
