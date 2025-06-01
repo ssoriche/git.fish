@@ -303,6 +303,43 @@ This project is released under the same license as specified in the LICENSE file
 
 ## Development
 
+### Code Quality & Testing
+
+This repository includes comprehensive CI/CD workflows to ensure code quality and functionality:
+
+#### GitHub Actions & Forgejo Workflows
+
+The project includes automated testing workflows for both GitHub Actions (`.github/workflows/test.yaml`) and Forgejo (`.forgejo/workflows/test.yaml`) that:
+
+**Linting & Formatting:**
+
+- ✅ **Syntax checking** using `fish --no-execute`
+- ✅ **Code formatting** validation with `fish_indent`
+- ✅ **Style consistency** enforcement
+
+**Function Testing:**
+
+- ✅ **Multi-version testing** (Fish 3.3.1, 3.6.0, latest)
+- ✅ **Function loading** verification
+- ✅ **Help system** testing
+- ✅ **Cross-platform** compatibility
+
+**Git Integration Testing:**
+
+- ✅ **Git wrapper** functionality
+- ✅ **Repository context** testing
+- ✅ **Branch detection** validation
+
+**Dependency Testing:**
+
+- ✅ **Optional dependencies** (fzf) graceful handling
+- ✅ **Missing dependencies** error handling
+
+**Integration Testing:**
+
+- ✅ **End-to-end** workflow testing
+- ✅ **Real git repository** scenarios
+
 #### Running Tests Locally
 
 To run the same tests locally:
