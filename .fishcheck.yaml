@@ -1,0 +1,32 @@
+# Fish Code Quality Configuration
+# This file defines standards for fish shell functions in this repository
+
+# Formatting standards
+formatting:
+  indent_size: 4
+  max_line_length: 100
+  enforce_indent: true
+
+# Naming conventions
+naming:
+  function_naming: kebab-case # git-wadd, git-wclean, etc.
+  variable_naming: snake_case # fish standard
+
+# Documentation requirements
+documentation:
+  require_description: true
+  require_help_option: true
+  require_examples: true
+  require_exit_codes: true
+
+# Function standards
+functions:
+  require_argparse: true # Use argparse for argument handling
+  require_local_vars: true # Use 'set -l' for local variables
+  require_error_handling: true # Handle errors with proper exit codes
+  prefer_printf: true # Use printf over echo
+
+# Git integration
+git:
+  require_upstream_detection: true # Auto-detect upstream branches
+  require_error_messages: true # Provide helpful error messages
