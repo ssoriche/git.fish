@@ -76,6 +76,42 @@ git wadd feature-456 origin/main --force
 - Creates new branch and worktree in one command
 - Switches to the new worktree directory after creation
 
+#### `git bclean` / `git-bclean`
+
+Clean up local branches that have been merged to upstream.
+
+```fish
+# Clean up merged branches
+git bclean
+
+# Preview what would be removed
+git bclean --dry-run
+
+# Skip specific branches
+git bclean --skip staging --skip release
+
+# Skip branches matching patterns
+git bclean --skip "feature/*" --skip "*-wip"
+
+# Skip multiple branches with comma-separated list
+git bclean --skip "staging,release,hotfix/*"
+
+# Force removal of unmerged branches too (use with caution!)
+git bclean --force
+
+# Get help
+git bclean --help
+```
+
+**Features:**
+
+- Automatically detects upstream branch
+- Finds local branches merged to upstream
+- Protects important branches (current, main, master, develop)
+- **Flexible skip patterns** with glob support and multiple formats
+- Safe deletion with confirmation of merge status
+- Comprehensive summary of actions taken
+
 #### `git wclean` / `git-wclean`
 
 Clean up worktrees whose commits have been merged to upstream.
@@ -241,14 +277,23 @@ git wjump hotfix
 ```fish
 # Remove a specific worktree safely
 git wrm ~/worktrees/completed-feature
-# Or: g wrm ~/worktrees/completed-feature
 
 # Bulk cleanup of merged worktrees
 git wclean --dry-run ~/worktrees  # Preview first
 git wclean ~/worktrees            # Actually clean up
-# Or with abbreviation:
-# g wclean --dry-run ~/worktrees
-# g wclean ~/worktrees
+```
+
+### Branch and Worktree Maintenance
+
+```fish
+# Complete cleanup workflow after merging features
+git bclean --dry-run    # Preview merged branches to remove
+git bclean              # Remove merged local branches
+git wclean ~/worktrees  # Clean up merged worktrees
+
+# Selective cleanup with skip patterns
+git bclean --skip "staging,release" --skip "hotfix/*"
+git bclean --dry-run --skip "*-wip" --skip "feature/experimental*"
 ```
 
 ## Configuration
@@ -295,6 +340,7 @@ Optional tools that enhance the experience:
    ```
 
 4. **Use help**: All functions have comprehensive help
+
    ```fish
    git wadd --help
    git wclean --help
