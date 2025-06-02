@@ -97,7 +97,7 @@ jobs:
             end
 
             # Test help for functions that support it
-            set help_functions git-wadd git-wclean git-wjump git-wrm git-diff-plain git-show-plain cwb
+            set help_functions git-wadd git-wclean git-wjump git-wrm git-bclean git-diff-plain git-show-plain cwb
 
             for func in \$help_functions
               echo 'Testing help for: '\$func
