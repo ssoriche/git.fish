@@ -340,6 +340,7 @@ Optional tools that enhance the experience:
    ```
 
 4. **Use help**: All functions have comprehensive help
+
    ```fish
    git wadd --help
    git wclean --help
