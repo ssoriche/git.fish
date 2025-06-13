@@ -168,9 +168,10 @@ function git-bclean --description "Clean up local branches that have been merged
 
         printf "  Checking: %s " $branch
 
-        # Check if branch is merged to upstream
+        # Check if all commits from the branch exist in upstream
         set -l is_merged false
-        if git merge-base --is-ancestor $branch $upstream_branch 2>/dev/null
+        set -l branch_commits (git rev-list $branch --not $upstream_branch ^-1 2>/dev/null)
+        if test -z "$branch_commits"
             set is_merged true
             printf "✓ (merged)\n"
         else
