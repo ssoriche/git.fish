@@ -162,7 +162,8 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
 
     # Check if the commit exists in the upstream branch
     set -l commit_found false
-    if git branch -r --contains $head_commit 2>/dev/null | string match -q "*/$upstream_branch"
+    set -l branch_commits (git rev-list $head_commit --not $upstream_branch ^-1 2>/dev/null)
+    if test -z "$branch_commits"
         set commit_found true
         printf "  ✓ Commit found in upstream branch %s.\n" $upstream_branch
     else
