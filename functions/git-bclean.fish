@@ -179,7 +179,7 @@ function git-bclean --description "Clean up local branches that have been merged
         end
 
         # Decide whether to remove the branch
-        if test $is_merged = true -o (set -q _flag_force)
+        if test $is_merged = true; or set -q _flag_force
             if set -q _flag_dry_run
                 if test $is_merged = true
                     printf "    Would remove: %s (merged)\n" $branch

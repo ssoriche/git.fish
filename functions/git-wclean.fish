@@ -109,7 +109,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
         set processed_count (math $processed_count + 1)
 
         # Check if it's a Git repository
-        if not test -d "$subdir/.git"
+        if not test -e "$subdir/.git"
             printf "Skipping '%s': Not a git repository.\n" (basename $subdir)
             set skipped_count (math $skipped_count + 1)
             continue
@@ -207,7 +207,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
             if set -q _flag_dry_run
                 printf "Would remove worktree: %s\n" $worktree_name
                 # Show branch deletion info
-                if test -n "$current_branch_name" -a (not set -q _flag_no_delete_branch)
+                if test -n "$current_branch_name"; and not set -q _flag_no_delete_branch
                     printf "  Would also delete local branch: %s\n" $current_branch_name
                 else if set -q _flag_no_delete_branch
                     printf "  Would keep local branch: %s\n" $current_branch_name
@@ -218,7 +218,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
                     set removed_count (math $removed_count + 1)
 
                     # Remove the associated local branch unless --no-delete-branch is specified
-                    if test -n "$current_branch_name" -a (not set -q _flag_no_delete_branch)
+                    if test -n "$current_branch_name"; and not set -q _flag_no_delete_branch
                         printf "  Removing associated local branch '%s'...\n" $current_branch_name
 
                         # Check if the branch exists locally
