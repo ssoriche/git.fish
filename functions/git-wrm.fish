@@ -88,8 +88,8 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         return 1
     end
 
-    # Check if it's a Git repository
-    if not test -d "$worktree_path/.git"
+    # Check if it's a Git repository (worktrees have .git as a file, not directory)
+    if not test -e "$worktree_path/.git"
         printf "Error: '%s' is not a git repository.\n" $worktree_path >&2
         return 1
     end
@@ -118,9 +118,25 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     printf "  Current HEAD: %s\n" (string sub -l 8 $head_commit)
 
     # Get the main repository path
-    set -l main_repo (git rev-parse --show-toplevel 2>/dev/null)
+    # For worktrees, we need to find the actual main repository, not just the current toplevel
+    set -l git_common_dir (git rev-parse --git-common-dir 2>/dev/null)
     if test $status -ne 0
-        printf "Error: Failed to find main repository.\n" >&2
+        printf "Error: Failed to find git directory.\n" >&2
+        popd >/dev/null
+        return 2
+    end
+
+    # If git-common-dir is relative, make it absolute from the current worktree
+    if not string match -q '/*' "$git_common_dir"
+        set git_common_dir "$worktree_path/$git_common_dir"
+    end
+
+    # The main repository is the parent of the .git directory
+    set -l main_repo (dirname "$git_common_dir")
+
+    # Validate that we found a reasonable main repository path
+    if not test -d "$main_repo"
+        printf "Error: Could not determine main repository path.\n" >&2
         popd >/dev/null
         return 2
     end
@@ -173,7 +189,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     popd >/dev/null
 
     # Decide whether to remove the worktree
-    if test $commit_found = true -o (set -q _flag_force)
+    if test $commit_found = true; or set -q _flag_force
         # Change to main repository to run worktree remove
         pushd "$main_repo" >/dev/null
         or begin
@@ -189,7 +205,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             end
 
             # Show branch deletion info
-            if test -n "$current_branch_name" -a (not set -q _flag_no_delete_branch)
+            if test -n "$current_branch_name"; and not set -q _flag_no_delete_branch
                 printf "Would also delete local branch: %s\n" $current_branch_name
             else if set -q _flag_no_delete_branch
                 printf "Would keep local branch: %s\n" $current_branch_name
@@ -207,7 +223,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
                 printf "✓ Successfully removed worktree: %s\n" $worktree_name
 
                 # Remove the associated local branch unless --no-delete-branch is specified
-                if test -n "$current_branch_name" -a (not set -q _flag_no_delete_branch)
+                if test -n "$current_branch_name"; and not set -q _flag_no_delete_branch
                     printf "Removing associated local branch '%s'...\n" $current_branch_name
 
                     # Check if the branch exists locally
