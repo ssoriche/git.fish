@@ -5,7 +5,12 @@
 # and ensure all functions use proper fish shell syntax
 
 function test_fish_syntax_compliance --description "Test all functions for proper fish shell syntax"
-    set -l test_functions_dir (dirname (status --current-filename))/../functions
+    # More robust path resolution for CI environments
+    set -l test_file_dir (dirname (status --current-filename))
+    set -l test_functions_dir "$test_file_dir/../functions"
+    if test -d "$test_functions_dir"
+        set test_functions_dir (realpath "$test_functions_dir")
+    end
     set -l failed_tests 0
     set -l total_tests 0
 
@@ -130,7 +135,12 @@ end
 
 # Test 7: Function-specific tests for common issues
 function test_function_specific_issues --description "Test for specific issues in individual functions"
-    set -l test_functions_dir (dirname (status --current-filename))/../functions
+    # More robust path resolution for CI environments
+    set -l test_file_dir (dirname (status --current-filename))
+    set -l test_functions_dir "$test_file_dir/../functions"
+    if test -d "$test_functions_dir"
+        set test_functions_dir (realpath "$test_functions_dir")
+    end
     set -l failed_tests 0
     set -l total_tests 0
 
