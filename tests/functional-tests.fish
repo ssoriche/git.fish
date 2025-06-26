@@ -34,11 +34,15 @@ function cleanup_test_repo --description "Clean up test repository"
 end
 
 function test_cwb_function --description "Test the cwb (current working branch) function"
-    # More robust path resolution for CI environments
-    set -l test_file_dir (dirname (status --current-filename))
-    set -l test_functions_dir "$test_file_dir/../functions"
-    if test -d "$test_functions_dir"
-        set test_functions_dir (realpath "$test_functions_dir")
+    # Use environment variable or fall back to relative path
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        # Fall back to relative path from test file
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
     end
     set -l test_repo (setup_test_repo)
     set -l failed_tests 0
@@ -106,11 +110,15 @@ function test_cwb_function --description "Test the cwb (current working branch) 
 end
 
 function test_git_wrapper --description "Test the main git wrapper function"
-    # More robust path resolution for CI environments
-    set -l test_file_dir (dirname (status --current-filename))
-    set -l test_functions_dir "$test_file_dir/../functions"
-    if test -d "$test_functions_dir"
-        set test_functions_dir (realpath "$test_functions_dir")
+    # Use environment variable or fall back to relative path
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        # Fall back to relative path from test file
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
     end
     set -l test_repo (setup_test_repo)
     set -l failed_tests 0
@@ -118,7 +126,23 @@ function test_git_wrapper --description "Test the main git wrapper function"
 
     echo "🔍 Testing git wrapper function..."
 
+    # Check if functions directory exists
+    if not test -d "$test_functions_dir"
+        echo "❌ Functions directory not found: $test_functions_dir"
+        echo "Working directory: "(pwd)
+        echo "Test file: "(status --current-filename)
+        return 1
+    end
+
     # Source the git wrapper and cwb
+    if not test -f "$test_functions_dir/git.fish"
+        echo "❌ git.fish not found in: $test_functions_dir"
+        return 1
+    end
+    if not test -f "$test_functions_dir/cwb.fish"
+        echo "❌ cwb.fish not found in: $test_functions_dir"
+        return 1
+    end
     source $test_functions_dir/git.fish
     source $test_functions_dir/cwb.fish
 
@@ -157,18 +181,34 @@ function test_git_wrapper --description "Test the main git wrapper function"
 end
 
 function test_git_wrm_validation --description "Test git-wrm input validation and error handling"
-    # More robust path resolution for CI environments
-    set -l test_file_dir (dirname (status --current-filename))
-    set -l test_functions_dir "$test_file_dir/../functions"
-    if test -d "$test_functions_dir"
-        set test_functions_dir (realpath "$test_functions_dir")
+    # Use environment variable or fall back to relative path
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        # Fall back to relative path from test file
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
     end
     set -l failed_tests 0
     set -l total_tests 0
 
     echo "🔍 Testing git-wrm validation..."
 
+    # Check if functions directory exists
+    if not test -d "$test_functions_dir"
+        echo "❌ Functions directory not found: $test_functions_dir"
+        echo "Working directory: "(pwd)
+        echo "Test file: "(status --current-filename)
+        return 1
+    end
+
     # Source the function
+    if not test -f "$test_functions_dir/git-wrm.fish"
+        echo "❌ git-wrm.fish not found in: $test_functions_dir"
+        return 1
+    end
     source $test_functions_dir/git-wrm.fish
 
     # Test 1: Help functionality

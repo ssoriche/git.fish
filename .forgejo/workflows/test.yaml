@@ -194,6 +194,7 @@ jobs:
       - name: Run functional tests
         run: |
           echo "Running functional tests..."
+          export FISH_FUNCTIONS_DIR="$PWD/functions"
           fish tests/functional-tests.fish
 
   test-dependencies:
