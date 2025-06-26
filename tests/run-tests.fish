@@ -17,7 +17,11 @@ end
 
 function run_all_tests --description "Run all test suites"
     set -l total_exit_code 0
-    set -l test_dir (dirname (status --current-filename))
+    set -l test_file_dir (dirname (status --current-filename))
+    set -l test_dir "$test_file_dir"
+    if test -d "$test_dir"
+        set test_dir (realpath "$test_dir")
+    end
 
     print_header "🚀 Running git.fish Test Suite"
 
@@ -59,7 +63,11 @@ function run_all_tests --description "Run all test suites"
 end
 
 function run_quick_tests --description "Run quick syntax and validation tests only"
-    set -l test_dir (dirname (status --current-filename))
+    set -l test_file_dir (dirname (status --current-filename))
+    set -l test_dir "$test_file_dir"
+    if test -d "$test_dir"
+        set test_dir (realpath "$test_dir")
+    end
 
     print_header "⚡ Running Quick Tests"
 
@@ -98,7 +106,11 @@ end
 # Main command dispatcher
 function main
     set -l command $argv[1]
-    set -l test_dir (dirname (status --current-filename))
+    set -l test_file_dir (dirname (status --current-filename))
+    set -l test_dir "$test_file_dir"
+    if test -d "$test_dir"
+        set test_dir (realpath "$test_dir")
+    end
 
     switch "$command"
         case "" "all"
