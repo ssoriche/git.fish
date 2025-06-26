@@ -27,6 +27,11 @@ jobs:
             fish --no-execute "$file"
           done
 
+      - name: Run syntax compliance tests
+        run: |
+          echo "Running fish shell syntax compliance tests..."
+          fish tests/syntax-tests.fish
+
       - name: Check function formatting
         run: |
           echo "Checking code formatting..."
@@ -178,13 +183,18 @@ jobs:
             echo 'Testing cwb function...'
 
             set current_branch (cwb)
-            if test \"\$current_branch\" = 'main' -o \"\$current_branch\" = 'master'
+            if test \"\$current_branch\" = 'main'; or test \"\$current_branch\" = 'master'
               echo 'SUCCESS: cwb returned current branch: '\$current_branch
             else
               echo 'ERROR: cwb returned unexpected branch: '\$current_branch
               exit 1
             end
           "
+
+      - name: Run functional tests
+        run: |
+          echo "Running functional tests..."
+          fish tests/functional-tests.fish
 
   test-dependencies:
     name: Test Optional Dependencies
