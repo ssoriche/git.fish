@@ -57,7 +57,8 @@ function git-bclean --description "Clean up local branches that have been merged
     # Show help if requested
     if set -q _flag_help
         printf '%s\n' (status function | head -n 1)
-        printf '\n%s\n' (functions git-bclean | string match -r '#.*' | string trim -c '# ')
+        printf '\n'
+        functions git-bclean | string match -r '^\s*#\s.*' | string replace -r '^\s*#\s?' '' | string replace -r '^\s*#\s*$' ''
         return 0
     end
 

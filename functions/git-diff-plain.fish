@@ -40,7 +40,8 @@ function git-diff-plain --description "Run git diff without a pager for plain te
     # Show help if requested
     if set -q _flag_help
         printf '%s\n' (status function | head -n 1)
-        printf '\n%s\n' (functions git-diff-plain | string match -r '#.*' | string trim -c '# ')
+        printf '\n'
+        functions git-diff-plain | string match -r '^\s*#\s.*' | string replace -r '^\s*#\s?' '' | string replace -r '^\s*#\s*$' ''
         return 0
     end
 

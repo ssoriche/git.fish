@@ -38,7 +38,8 @@ function cwb --description "Get the current working branch name"
     # Show help if requested
     if set -q _flag_help
         printf '%s\n' (status function | head -n 1)
-        printf '\n%s\n' (functions cwb | string match -r '#.*' | string trim -c '# ')
+        printf '\n'
+        functions cwb | string match -r '^\s*#\s.*' | string replace -r '^\s*#\s?' '' | string replace -r '^\s*#\s*$' ''
         return 0
     end
 
