@@ -1,5 +1,26 @@
 #!/usr/bin/env fish
 
+# Configuration defaults and loading
+function _wclean_load_config
+    # Set default configuration values
+    set -g _wclean_config_protected_branches main master develop trunk
+    set -g _wclean_config_default_upstream origin/main
+    set -g _wclean_config_system_dirs /etc /bin /usr/bin /sbin /usr/sbin
+    set -g _wclean_config_max_path_length 4096
+    set -g _wclean_config_fetch_timeout 30
+
+    # Look for configuration files in order of preference
+    set -l config_files ~/.config/git-wclean/config ~/.git-wclean-config ./.git-wclean-config
+
+    for config_file in $config_files
+        if test -f "$config_file"; and test -r "$config_file"
+            printf "Loading configuration from: %s\n" $config_file
+            source "$config_file"
+            break
+        end
+    end
+end
+
 # Security validation helper function
 function _wclean_validate_path
     set -l path $argv[1]
@@ -22,8 +43,8 @@ function _wclean_validate_path
     end
 
     # Check path length to prevent buffer overflow attacks
-    if test (string length "$path") -gt 4096
-        printf "Error: %s length exceeds maximum allowed (4096 characters).\n" $path_type >&2
+    if test (string length "$path") -gt $_wclean_config_max_path_length
+        printf "Error: %s length exceeds maximum allowed (%d characters).\n" $path_type $_wclean_config_max_path_length >&2
         return 1
     end
 
@@ -105,9 +126,11 @@ function _wclean_setup_directory
     end
 
     # Security validation: Prevent operations on system directories
-    if string match -q '/etc/*' "$_wclean_worktrees_dir"; or string match -q '/bin/*' "$_wclean_worktrees_dir"; or string match -q '/usr/bin/*' "$_wclean_worktrees_dir"; or string match -q '/sbin/*' "$_wclean_worktrees_dir"
-        printf "Error: Operation not allowed on system directories.\n" >&2
-        return 1
+    for system_dir in $_wclean_config_system_dirs
+        if string match -q "$system_dir/*" "$_wclean_worktrees_dir"
+            printf "Error: Operation not allowed on system directory '%s'.\n" $system_dir >&2
+            return 1
+        end
     end
 
     # Security validation: Ensure we have write permissions if not in dry-run mode
@@ -127,7 +150,7 @@ end
 # Helper function to fetch remote updates and cache remote info
 function _wclean_fetch_remotes
     printf "Fetching latest changes from remotes...\n"
-    
+
     # Cache remote information to avoid repeated git calls
     set -g _wclean_remotes (git remote 2>/dev/null)
     if test $status -ne 0
@@ -149,7 +172,7 @@ function _wclean_fetch_remotes
     # Cache default branch information for better performance
     set -g _wclean_default_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | string replace 'refs/remotes/' '')
     if test $status -ne 0; or test -z "$_wclean_default_branch"
-        set -g _wclean_default_branch "origin/main"
+        set -g _wclean_default_branch $_wclean_config_default_upstream
     end
 
     printf "\n"
@@ -274,7 +297,7 @@ function _wclean_find_main_repo
 
     # The main repository is the parent of the .git directory
     set -l main_repo (dirname "$git_common_dir")
-    
+
     # Validate that the main repo exists and is accessible
     if not test -d "$main_repo"
         printf "  Error: Main repository directory '%s' does not exist\n" $main_repo >&2
@@ -315,7 +338,7 @@ function _wclean_remove_worktree
     set -l worktree_name (basename $worktree_path)
 
     # Protect main worktrees from accidental removal (unless --force is used)
-    if contains "$worktree_name" main master develop trunk; and not set -q _flag_force
+    if contains "$worktree_name" $_wclean_config_protected_branches; and not set -q _flag_force
         printf "  Protected: '%s' worktree will not be removed for safety.\n" $worktree_name
         return 1
     end
@@ -368,13 +391,13 @@ end
 # Helper function to remove a branch
 function _wclean_remove_branch
     set -l branch_name $argv[1]
-    
+
     # Validate input
     if test -z "$branch_name"
         printf "  Error: No branch name provided for deletion\n" >&2
         return 1
     end
-    
+
     printf "  Removing associated local branch '%s'...\n" $branch_name
 
     # Performance optimization: use git rev-parse to check existence more efficiently
@@ -398,7 +421,7 @@ end
 # Helper function to process a single worktree
 function _wclean_process_worktree
     set -l worktree_path $argv[1]
-    
+
     # Validate input
     if test -z "$worktree_path"
         printf "Error: No worktree path provided for processing\n" >&2
@@ -443,11 +466,11 @@ function _wclean_process_worktree
         printf "  Error: Failed to check merge status against %s\n" $_wclean_upstream_branch >&2
         set merge_check_status 2  # Error
     end
-    
+
     switch $merge_check_status
         case 0
             # Commit is merged, proceed with removal
-            
+
             # Find main repository
             if not _wclean_find_main_repo "$worktree_path"
                 # Error message already printed by the helper function
@@ -535,10 +558,32 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   # Can also be called as git subcommand
     #   git wclean ~/git/myproject-worktrees
     #
+    # CONFIGURATION
+    #   Configuration files are loaded from (in order):
+    #   1. ~/.config/git-wclean/config
+    #   2. ~/.git-wclean-config
+    #   3. ./.git-wclean-config
+    #
+    #   Example configuration file:
+    #   # Protected branch names (space-separated)
+    #   set -g _wclean_config_protected_branches main master develop staging trunk
+    #
+    #   # Default upstream branch when none is configured
+    #   set -g _wclean_config_default_upstream origin/main
+    #
+    #   # System directories to protect (space-separated)
+    #   set -g _wclean_config_system_dirs /etc /bin /usr/bin /sbin /usr/sbin
+    #
+    #   # Maximum path length allowed
+    #   set -g _wclean_config_max_path_length 4096
+    #
     # EXIT STATUS
     #   0    Success
     #   1    Invalid arguments or directory not found
     #   2    Git command failed
+
+    # Load configuration first
+    _wclean_load_config
 
     # Parse and validate arguments
     if not _wclean_parse_args $argv
