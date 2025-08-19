@@ -154,6 +154,15 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         set current_branch_name ""
     end
 
+    # Protect main worktrees from accidental removal (unless --force is used)
+    set -l worktree_name (basename "$worktree_path")
+    if contains "$worktree_name" main master develop trunk; and not set -q _flag_force
+        printf "Error: Protected worktree '%s' will not be removed for safety.\n" $worktree_name >&2
+        printf "Tip: Use --force to override protection (not recommended).\n" >&2
+        popd >/dev/null
+        return 1
+    end
+
     # Don't remove the main repository itself
     if test "$worktree_path" = "$main_repo"
         printf "Error: Cannot remove the main repository. Use a worktree path instead.\n" >&2

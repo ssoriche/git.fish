@@ -22,6 +22,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #
     # OPTIONS
     #   -n, --dry-run        Show what would be removed without actually removing anything
+    #   -f, --force          Force removal including protected worktrees (use with caution)
     #   --no-delete-branch   Keep local branches after removing worktrees
     #   -h, --help           Show this help message
     #
@@ -47,7 +48,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   2    Git command failed
 
     # Parse command line arguments
-    argparse --name=git-wclean h/help n/dry-run no-delete-branch -- $argv
+    argparse --name=git-wclean h/help n/dry-run f/force no-delete-branch -- $argv
     or return 1
 
     # Show help if requested
@@ -204,6 +205,13 @@ function git-wclean --description "Clean up git worktrees that have been merged 
         if $commit_found
             # Get worktree name for removal
             set -l worktree_name (basename $subdir)
+
+            # Protect main worktrees from accidental removal (unless --force is used)
+            if contains "$worktree_name" main master develop trunk; and not set -q _flag_force
+                printf "  Protected: '%s' worktree will not be removed for safety.\n" $worktree_name
+                set skipped_count (math $skipped_count + 1)
+                continue
+            end
 
             # Don't remove the main repository itself
             # Compare the full paths to determine if this is the main repository
