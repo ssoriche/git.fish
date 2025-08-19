@@ -76,8 +76,24 @@ function _wclean_check_merge_status
     set -l head_commit $argv[2]
     set -l upstream_branch $argv[3]
 
+    # Validate inputs
+    if test -z "$head_commit"
+        printf "  Error: Invalid head commit provided\n" >&2
+        return 2
+    end
+
+    if test -z "$upstream_branch"
+        printf "  Error: Invalid upstream branch provided\n" >&2
+        return 2
+    end
+
     # Check if the commit exists in the upstream branch
     set -l branch_commits (git rev-list $head_commit --not $upstream_branch 2>/dev/null)
+    if test $status -ne 0
+        printf "  Error: Failed to check merge status against %s\n" $upstream_branch >&2
+        return 2
+    end
+
     if test -z "$branch_commits"
         printf "  ✓ Commit found in upstream branch %s.\n" $upstream_branch
         return 0
@@ -91,12 +107,27 @@ end
 function _wclean_get_worktree_info
     set -l worktree_path $argv[1]
     
+    # Validate input
+    if test -z "$worktree_path"
+        printf "  Error: No worktree path provided\n" >&2
+        return 1
+    end
+
+    if not test -d "$worktree_path"
+        printf "  Error: Worktree path '%s' is not a directory\n" $worktree_path >&2
+        return 1
+    end
+    
     pushd "$worktree_path" >/dev/null
-    or return 1
+    or begin
+        printf "  Error: Cannot access worktree directory '%s'\n" $worktree_path >&2
+        return 1
+    end
 
     # Get the current HEAD commit hash
     set -l head_commit (git rev-parse HEAD 2>/dev/null)
     if test $status -ne 0
+        printf "  Error: Failed to get HEAD commit in '%s'\n" $worktree_path >&2
         popd >/dev/null
         return 1
     end
@@ -129,12 +160,27 @@ end
 function _wclean_find_main_repo
     set -l worktree_path $argv[1]
     
+    # Validate input
+    if test -z "$worktree_path"
+        printf "  Error: No worktree path provided to find main repo\n" >&2
+        return 1
+    end
+
+    if not test -d "$worktree_path"
+        printf "  Error: Worktree path '%s' is not a directory\n" $worktree_path >&2
+        return 1
+    end
+    
     pushd "$worktree_path" >/dev/null
-    or return 1
+    or begin
+        printf "  Error: Cannot access worktree directory '%s' to find main repo\n" $worktree_path >&2
+        return 1
+    end
 
     # For worktrees, we need to find the main repository, not just the worktree toplevel
     set -l git_common_dir (git rev-parse --git-common-dir 2>/dev/null)
     if test $status -ne 0
+        printf "  Error: Failed to find git common directory from worktree '%s'\n" $worktree_path >&2
         popd >/dev/null
         return 1
     end
@@ -145,7 +191,16 @@ function _wclean_find_main_repo
     end
 
     # The main repository is the parent of the .git directory
-    set -g _wclean_main_repo (dirname "$git_common_dir")
+    set -l main_repo (dirname "$git_common_dir")
+    
+    # Validate that the main repo exists and is accessible
+    if not test -d "$main_repo"
+        printf "  Error: Main repository directory '%s' does not exist\n" $main_repo >&2
+        popd >/dev/null
+        return 1
+    end
+
+    set -g _wclean_main_repo $main_repo
     popd >/dev/null
     return 0
 end
@@ -153,9 +208,31 @@ end
 # Helper function to remove a worktree and optionally its branch
 function _wclean_remove_worktree
     set -l worktree_path $argv[1]
-    set -l worktree_name (basename $worktree_path)
     set -l main_repo $argv[2]
     set -l current_branch_name $argv[3]
+
+    # Validate inputs
+    if test -z "$worktree_path"
+        printf "  Error: No worktree path provided for removal\n" >&2
+        return 1
+    end
+
+    if test -z "$main_repo"
+        printf "  Error: No main repository path provided for removal\n" >&2
+        return 1
+    end
+
+    if not test -d "$worktree_path"
+        printf "  Error: Worktree path '%s' is not a directory\n" $worktree_path >&2
+        return 1
+    end
+
+    if not test -d "$main_repo"
+        printf "  Error: Main repository path '%s' is not a directory\n" $main_repo >&2
+        return 1
+    end
+
+    set -l worktree_name (basename $worktree_path)
 
     # Protect main worktrees from accidental removal (unless --force is used)
     if contains "$worktree_name" main master develop trunk; and not set -q _flag_force
@@ -175,7 +252,7 @@ function _wclean_remove_worktree
     # Change to main repository to run worktree remove
     pushd "$main_repo" >/dev/null
     or begin
-        printf "  Error: Cannot access main repository '%s'.\n" $main_repo >&2
+        printf "  Error: Cannot access main repository '%s' for worktree removal.\n" $main_repo >&2
         return 1
     end
 
@@ -198,7 +275,7 @@ function _wclean_remove_worktree
                 printf "  Keeping local branch '%s' as requested.\n" $current_branch_name
             end
         else
-            printf "Error: Failed to remove worktree '%s'.\n" $worktree_name >&2
+            printf "  Error: Failed to remove worktree '%s'. Check if it exists and is not in use.\n" $worktree_name >&2
             popd >/dev/null
             return 1
         end
@@ -212,19 +289,29 @@ end
 function _wclean_remove_branch
     set -l branch_name $argv[1]
     
+    # Validate input
+    if test -z "$branch_name"
+        printf "  Error: No branch name provided for deletion\n" >&2
+        return 1
+    end
+    
     printf "  Removing associated local branch '%s'...\n" $branch_name
 
     # Check if the branch exists locally
-    if git branch --list "$branch_name" | string match -q "*$branch_name*"
+    if git branch --list "$branch_name" 2>/dev/null | string match -q "*$branch_name*"
         if git branch -d "$branch_name" >/dev/null 2>&1
             printf "  ✓ Successfully deleted local branch: %s\n" $branch_name
+            return 0
         else if git branch -D "$branch_name" >/dev/null 2>&1
             printf "  ✓ Force deleted local branch: %s (had unmerged changes)\n" $branch_name
+            return 0
         else
             printf "  Warning: Failed to delete local branch '%s'.\n" $branch_name >&2
+            return 1
         end
     else
         printf "  Local branch '%s' not found, skipping deletion.\n" $branch_name
+        return 0
     end
 end
 
@@ -232,6 +319,12 @@ end
 function _wclean_process_worktree
     set -l worktree_path $argv[1]
     
+    # Validate input
+    if test -z "$worktree_path"
+        printf "Error: No worktree path provided for processing\n" >&2
+        return 1
+    end
+
     if not test -d "$worktree_path"
         return 1
     end
@@ -246,31 +339,43 @@ function _wclean_process_worktree
 
     # Get worktree information
     if not _wclean_get_worktree_info "$worktree_path"
-        printf "Error: Failed to get worktree info for '%s'.\n" $worktree_path >&2
+        # Error message already printed by the helper function
         return 1
     end
 
     # Check merge status
     pushd "$worktree_path" >/dev/null
-    if _wclean_check_merge_status "$worktree_path" "$_wclean_head_commit" "$_wclean_upstream_branch"
-        popd >/dev/null
-        
-        # Find main repository
-        if not _wclean_find_main_repo "$worktree_path"
-            printf "  Error: Failed to find git common directory from worktree.\n" >&2
-            return 1
-        end
+    set -l merge_status (_wclean_check_merge_status "$worktree_path" "$_wclean_head_commit" "$_wclean_upstream_branch"; echo $status)
+    popd >/dev/null
+    
+    switch $merge_status
+        case 0
+            # Commit is merged, proceed with removal
+            
+            # Find main repository
+            if not _wclean_find_main_repo "$worktree_path"
+                # Error message already printed by the helper function
+                return 1
+            end
 
-        # Remove the worktree
-        if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$_wclean_current_branch"
-            return 0  # Successfully removed
-        else
-            return 1  # Skipped or failed
-        end
-    else
-        popd >/dev/null
-        printf "  - Commit not found on %s. Keeping worktree.\n" $_wclean_upstream_branch
-        return 1  # Not merged, keep worktree
+            # Remove the worktree
+            if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$_wclean_current_branch"
+                return 0  # Successfully removed
+            else
+                return 1  # Skipped or failed
+            end
+        case 1
+            # Commit not merged, keep worktree
+            printf "  - Commit not found on %s. Keeping worktree.\n" $_wclean_upstream_branch
+            return 1
+        case 2
+            # Error occurred during merge status check
+            printf "  Error: Failed to check merge status, skipping worktree.\n" >&2
+            return 1
+        case '*'
+            # Unexpected return value
+            printf "  Error: Unexpected result from merge status check, skipping worktree.\n" >&2
+            return 1
     end
 end
 
@@ -279,7 +384,7 @@ function _wclean_show_summary
     set -l processed_count $argv[1]
     set -l removed_count $argv[2]
     set -l skipped_count $argv[3]
-    
+
     printf "\nSummary:\n"
     printf "  Processed: %d worktrees\n" $processed_count
     if set -q _flag_dry_run
