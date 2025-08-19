@@ -124,14 +124,34 @@ function _wclean_setup_directory
     return 0
 end
 
-# Helper function to fetch remote updates
+# Helper function to fetch remote updates and cache remote info
 function _wclean_fetch_remotes
     printf "Fetching latest changes from remotes...\n"
-    if git fetch origin >/dev/null 2>&1
-        printf "✓ Fetched from origin\n"
-    else
-        printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
+    
+    # Cache remote information to avoid repeated git calls
+    set -g _wclean_remotes (git remote 2>/dev/null)
+    if test $status -ne 0
+        printf "⚠️  Warning: Failed to get remote list. Proceeding with local information.\n"
+        set -g _wclean_remotes ""
     end
+
+    # Try to fetch from origin if it exists
+    if contains origin $_wclean_remotes
+        if git fetch origin >/dev/null 2>&1
+            printf "✓ Fetched from origin\n"
+        else
+            printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
+        end
+    else
+        printf "⚠️  Note: No 'origin' remote found.\n"
+    end
+
+    # Cache default branch information for better performance
+    set -g _wclean_default_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | string replace 'refs/remotes/' '')
+    if test $status -ne 0; or test -z "$_wclean_default_branch"
+        set -g _wclean_default_branch "origin/main"
+    end
+
     printf "\n"
 end
 
@@ -171,7 +191,7 @@ end
 # Helper function to get worktree information
 function _wclean_get_worktree_info
     set -l worktree_path $argv[1]
-    
+
     # Validate input
     if test -z "$worktree_path"
         printf "  Error: No worktree path provided\n" >&2
@@ -188,36 +208,29 @@ function _wclean_get_worktree_info
         return 1
     end
 
-    pushd "$worktree_path" >/dev/null
-    or begin
-        printf "  Error: Cannot access worktree directory '%s'\n" $worktree_path >&2
-        return 1
-    end
-
+    # Performance optimization: use git -C to avoid directory changes
     # Get the current HEAD commit hash
-    set -l head_commit (git rev-parse HEAD 2>/dev/null)
+    set -l head_commit (git -C "$worktree_path" rev-parse HEAD 2>/dev/null)
     if test $status -ne 0
         printf "  Error: Failed to get HEAD commit in '%s'\n" $worktree_path >&2
-        popd >/dev/null
         return 1
     end
 
     # Get the current branch name for potential deletion
-    set -l current_branch_name (git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    set -l current_branch_name (git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null)
     if test $status -ne 0
         set current_branch_name ""
     end
 
     # Determine the upstream branch
-    set -l upstream_branch (git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+    set -l upstream_branch (git -C "$worktree_path" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
     if test $status -ne 0
-        printf "  No upstream branch configured, using origin/main as default.\n"
-        set upstream_branch origin/main
+        # Use cached default branch instead of hardcoded origin/main
+        set upstream_branch $_wclean_default_branch
+        printf "  No upstream branch configured, using %s as default.\n" $upstream_branch
     else
         printf "  Upstream branch: %s\n" $upstream_branch
     end
-
-    popd >/dev/null
 
     # Export results as global variables for the caller
     set -g _wclean_head_commit $head_commit
@@ -229,7 +242,7 @@ end
 # Helper function to find the main repository path
 function _wclean_find_main_repo
     set -l worktree_path $argv[1]
-    
+
     # Validate input
     if test -z "$worktree_path"
         printf "  Error: No worktree path provided to find main repo\n" >&2
@@ -246,17 +259,11 @@ function _wclean_find_main_repo
         return 1
     end
 
-    pushd "$worktree_path" >/dev/null
-    or begin
-        printf "  Error: Cannot access worktree directory '%s' to find main repo\n" $worktree_path >&2
-        return 1
-    end
-
+    # Performance optimization: use git -C to avoid directory changes
     # For worktrees, we need to find the main repository, not just the worktree toplevel
-    set -l git_common_dir (git rev-parse --git-common-dir 2>/dev/null)
+    set -l git_common_dir (git -C "$worktree_path" rev-parse --git-common-dir 2>/dev/null)
     if test $status -ne 0
         printf "  Error: Failed to find git common directory from worktree '%s'\n" $worktree_path >&2
-        popd >/dev/null
         return 1
     end
 
@@ -267,16 +274,14 @@ function _wclean_find_main_repo
 
     # The main repository is the parent of the .git directory
     set -l main_repo (dirname "$git_common_dir")
-
+    
     # Validate that the main repo exists and is accessible
     if not test -d "$main_repo"
         printf "  Error: Main repository directory '%s' does not exist\n" $main_repo >&2
-        popd >/dev/null
         return 1
     end
 
     set -g _wclean_main_repo $main_repo
-    popd >/dev/null
     return 0
 end
 
@@ -363,17 +368,17 @@ end
 # Helper function to remove a branch
 function _wclean_remove_branch
     set -l branch_name $argv[1]
-
+    
     # Validate input
     if test -z "$branch_name"
         printf "  Error: No branch name provided for deletion\n" >&2
         return 1
     end
-
+    
     printf "  Removing associated local branch '%s'...\n" $branch_name
 
-    # Check if the branch exists locally
-    if git branch --list "$branch_name" 2>/dev/null | string match -q "*$branch_name*"
+    # Performance optimization: use git rev-parse to check existence more efficiently
+    if git rev-parse --verify "refs/heads/$branch_name" >/dev/null 2>&1
         if git branch -d "$branch_name" >/dev/null 2>&1
             printf "  ✓ Successfully deleted local branch: %s\n" $branch_name
             return 0
@@ -409,7 +414,7 @@ function _wclean_process_worktree
         return 1
     end
 
-    # Check if it's a Git repository
+    # Performance optimization: quick git repo check without changing directories
     if not test -e "$worktree_path/.git"
         printf "Skipping '%s': Not a git repository.\n" (basename $worktree_path)
         return 1
@@ -417,21 +422,32 @@ function _wclean_process_worktree
 
     printf "Processing: %s\n" (basename $worktree_path)
 
-    # Get worktree information
+    # Get worktree information (this function handles directory changes internally)
     if not _wclean_get_worktree_info "$worktree_path"
         # Error message already printed by the helper function
         return 1
     end
 
-    # Check merge status
-    pushd "$worktree_path" >/dev/null
-    set -l merge_status (_wclean_check_merge_status "$worktree_path" "$_wclean_head_commit" "$_wclean_upstream_branch"; echo $status)
-    popd >/dev/null
-
-    switch $merge_status
+    # Performance optimization: use git -C to avoid repeated pushd/popd
+    set -l merge_check_status 2
+    set -l branch_commits (git -C "$worktree_path" rev-list $_wclean_head_commit --not $_wclean_upstream_branch 2>/dev/null)
+    if test $status -eq 0
+        if test -z "$branch_commits"
+            set merge_check_status 0  # Merged
+            printf "  ✓ Commit found in upstream branch %s.\n" $_wclean_upstream_branch
+        else
+            set merge_check_status 1  # Not merged
+            printf "  ✗ Commit NOT found in upstream branch %s.\n" $_wclean_upstream_branch
+        end
+    else
+        printf "  Error: Failed to check merge status against %s\n" $_wclean_upstream_branch >&2
+        set merge_check_status 2  # Error
+    end
+    
+    switch $merge_check_status
         case 0
             # Commit is merged, proceed with removal
-
+            
             # Find main repository
             if not _wclean_find_main_repo "$worktree_path"
                 # Error message already printed by the helper function
@@ -542,11 +558,21 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     set -l removed_count 0
     set -l skipped_count 0
 
-    # Iterate through each directory in the worktrees directory
+    # Performance optimization: pre-scan and filter valid worktree directories
+    set -l worktree_dirs
     for subdir in $_wclean_worktrees_dir/*/
         # Remove trailing slash
         set subdir (string trim -r -c '/' -- $subdir)
+        # Quick validation to avoid processing invalid directories
+        if test -d "$subdir"; and test -e "$subdir/.git"
+            set -a worktree_dirs $subdir
+        end
+    end
 
+    printf "Found %d potential worktrees to process.\n\n" (count $worktree_dirs)
+
+    # Iterate through validated worktree directories
+    for subdir in $worktree_dirs
         set processed_count (math $processed_count + 1)
 
         # Process the worktree
