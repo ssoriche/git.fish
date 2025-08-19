@@ -101,6 +101,15 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     # Note: Fish shell signal handling is different from bash
     # Ctrl-C will naturally interrupt the script
 
+    # Fetch from common remotes upfront to avoid throttling and improve Ctrl-C handling
+    printf "Fetching latest changes from remotes...\n"
+    if git fetch origin >/dev/null 2>&1
+        printf "✓ Fetched from origin\n"
+    else
+        printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
+    end
+    printf "\n"
+
     # Iterate through each directory in the worktrees directory
     for subdir in $worktrees_dir/*/
         # Remove trailing slash and check if it's a directory
@@ -153,18 +162,10 @@ function git-wclean --description "Clean up git worktrees that have been merged 
             printf "  Upstream branch: %s\n" $upstream_branch
         end
 
-        # Extract remote name from upstream branch
+        # Note: Remote fetch was done upfront to avoid throttling and improve Ctrl-C handling
+        # Extract remote info for reference (but no additional fetch needed)
         set -l remote_name (string split '/' $upstream_branch)[1]
         set -l branch_name (string join '/' (string split '/' $upstream_branch)[2..-1])
-
-        # Fetch latest from the remote
-        printf "  Fetching latest from %s...\n" $remote_name
-        if not git fetch $remote_name $branch_name >/dev/null 2>&1
-            printf "  Warning: Failed to fetch from %s. Proceeding with local information.\n" $remote_name
-            popd >/dev/null
-            set skipped_count (math $skipped_count + 1)
-            continue
-        end
 
         # Check if the commit exists in the upstream branch
         set -l commit_found false
@@ -187,12 +188,12 @@ function git-wclean --description "Clean up git worktrees that have been merged 
                 set skipped_count (math $skipped_count + 1)
                 continue
             end
-            
+
             # If git-common-dir is relative, make it absolute from the current worktree
             if not string match -q '/*' "$git_common_dir"
                 set git_common_dir "$subdir/$git_common_dir"
             end
-            
+
             # The main repository is the parent of the .git directory
             set main_repo (dirname "$git_common_dir")
         end
@@ -208,7 +209,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
             # Compare the full paths to determine if this is the main repository
             set -l subdir_real (realpath "$subdir" 2>/dev/null || echo "$subdir")
             set -l main_repo_real (realpath "$main_repo" 2>/dev/null || echo "$main_repo")
-            
+
             if test "$subdir_real" = "$main_repo_real"
                 printf "  This is the main repository, cannot remove.\n"
                 set skipped_count (math $skipped_count + 1)
