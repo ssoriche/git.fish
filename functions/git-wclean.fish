@@ -169,7 +169,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
 
         # Check if the commit exists in the upstream branch
         set -l commit_found false
-        set -l branch_commits (git rev-list $head_commit --not $upstream_branch ^-1 2>/dev/null)
+        set -l branch_commits (git rev-list $head_commit --not $upstream_branch 2>/dev/null)
         if test -z "$branch_commits"
             set commit_found true
             printf "  ✓ Commit found in upstream branch %s.\n" $upstream_branch
