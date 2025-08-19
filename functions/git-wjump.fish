@@ -49,7 +49,8 @@ function git-wjump --description "Interactively select and jump to a git worktre
     # Show help if requested
     if set -q _flag_help
         printf '%s\n' (status function | head -n 1)
-        printf '\n%s\n' (functions git-wjump | string match -r '#.*' | string trim -c '# ')
+        printf '\n'
+        functions git-wjump | string match -r '^\s*#\s.*' | string replace -r '^\s*#\s?' '' | string replace -r '^\s*#\s*$' ''
         return 0
     end
 

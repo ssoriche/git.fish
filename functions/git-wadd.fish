@@ -45,7 +45,8 @@ function git-wadd --description "Create a new git worktree and branch"
     # Show help if requested
     if set -q _flag_help
         printf '%s\n' (status function | head -n 1)
-        printf '\n%s\n' (functions git-wadd | string match -r '#.*' | string trim -c '# ')
+        printf '\n'
+        functions git-wadd | string match -r '^\s*#\s.*' | string replace -r '^\s*#\s?' '' | string replace -r '^\s*#\s*$' ''
         return 0
     end
 
