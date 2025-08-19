@@ -98,6 +98,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     set -l removed_count 0
     set -l skipped_count 0
 
+    # Set up signal handling for clean interruption
+    trap 'printf "\n⚠️  Operation interrupted by user.\n"; exit 130' INT
+
     # Iterate through each directory in the worktrees directory
     for subdir in $worktrees_dir/*/
         # Remove trailing slash and check if it's a directory
@@ -173,35 +176,37 @@ function git-wclean --description "Clean up git worktrees that have been merged 
             printf "  ✗ Commit NOT found in upstream branch %s.\n" $upstream_branch
         end
 
-        popd >/dev/null
-
+        # Get the main repository path while still in the worktree
+        set -l main_repo ""
         if $commit_found
-            # Get the main repository path to remove the worktree
-            set -l main_repo (git rev-parse --show-toplevel 2>/dev/null)
+            set main_repo (git rev-parse --show-toplevel 2>/dev/null)
             if test $status -ne 0
-                printf "Error: Failed to find main repository.\n"
+                printf "  Error: Failed to find main repository from worktree.\n" >&2
                 popd >/dev/null
                 set skipped_count (math $skipped_count + 1)
                 continue
             end
+        end
 
+        # Return to original directory
+        popd >/dev/null
+
+        if $commit_found
             # Get worktree name for removal
             set -l worktree_name (basename $subdir)
 
             # Don't remove the main repository itself
             if test "$worktree_name" = (basename $main_repo)
-                printf "This is the main repository, cannot remove.\n"
-                popd >/dev/null
+                printf "  This is the main repository, cannot remove.\n"
                 set skipped_count (math $skipped_count + 1)
                 continue
             end
 
-            popd >/dev/null
-
             # Change to main repository to run worktree remove
             pushd "$main_repo" >/dev/null
             or begin
-                printf "Error: Cannot access main repository '%s'.\n" $main_repo >&2
+                printf "  Error: Cannot access main repository '%s'.\n" $main_repo >&2
+                set skipped_count (math $skipped_count + 1)
                 continue
             end
 
@@ -246,7 +251,6 @@ function git-wclean --description "Clean up git worktrees that have been merged 
             popd >/dev/null
         else
             printf "  - Commit not found on %s. Keeping worktree.\n" $upstream_branch
-            popd >/dev/null
             set skipped_count (math $skipped_count + 1)
         end
     end
