@@ -1,5 +1,58 @@
 #!/usr/bin/env fish
 
+# Signal handling for clean shutdown
+function _wclean_cleanup --on-signal INT TERM
+    # Restore original directory if we're in a different one
+    if set -q _wclean_original_dir; and test -d "$_wclean_original_dir"
+        cd "$_wclean_original_dir" 2>/dev/null
+    end
+
+    # Clean up any global variables we set
+    set -e _wclean_worktrees_dir
+    set -e _wclean_head_commit
+    set -e _wclean_current_branch
+    set -e _wclean_upstream_branch
+    set -e _wclean_main_repo
+    set -e _wclean_remotes
+    set -e _wclean_default_branch
+    set -e _wclean_original_dir
+
+    # Clean up config variables
+    set -e _wclean_config_protected_branches
+    set -e _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs
+    set -e _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout
+
+    printf "\n\n🚫 Operation interrupted by user. Cleanup completed.\n" >&2
+    exit 130 # Standard exit code for Ctrl+C
+end
+
+# Clean up function for normal exit
+function _wclean_normal_cleanup
+    # Restore original directory
+    if set -q _wclean_original_dir; and test -d "$_wclean_original_dir"
+        cd "$_wclean_original_dir" 2>/dev/null
+    end
+
+    # Clean up global variables
+    set -e _wclean_worktrees_dir
+    set -e _wclean_head_commit
+    set -e _wclean_current_branch
+    set -e _wclean_upstream_branch
+    set -e _wclean_main_repo
+    set -e _wclean_remotes
+    set -e _wclean_default_branch
+    set -e _wclean_original_dir
+
+    # Clean up config variables
+    set -e _wclean_config_protected_branches
+    set -e _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs
+    set -e _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout
+end
+
 # Configuration defaults and loading
 function _wclean_load_config
     # Set default configuration values
@@ -24,10 +77,10 @@ end
 # Security validation helper function
 function _wclean_validate_path
     set -l path $argv[1]
-    set -l path_type $argv[2]  # Optional description for error messages
+    set -l path_type $argv[2] # Optional description for error messages
 
     if test -z "$path_type"
-        set path_type "path"
+        set path_type path
     end
 
     # Check for path traversal attempts
@@ -158,12 +211,18 @@ function _wclean_fetch_remotes
         set -g _wclean_remotes ""
     end
 
-    # Try to fetch from origin if it exists
+    # Try to fetch from origin if it exists (with timeout)
     if contains origin $_wclean_remotes
-        if git fetch origin >/dev/null 2>&1
+        printf "Fetching from origin (timeout: %ds)...\n" $_wclean_config_fetch_timeout
+        if timeout $_wclean_config_fetch_timeout git fetch origin >/dev/null 2>&1
             printf "✓ Fetched from origin\n"
         else
-            printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
+            set -l fetch_status $status
+            if test $fetch_status -eq 124 # timeout exit code
+                printf "⚠️  Warning: Fetch from origin timed out after %ds. Proceeding with local information.\n" $_wclean_config_fetch_timeout
+            else
+                printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
+            end
         end
     else
         printf "⚠️  Note: No 'origin' remote found.\n"
@@ -456,15 +515,15 @@ function _wclean_process_worktree
     set -l branch_commits (git -C "$worktree_path" rev-list $_wclean_head_commit --not $_wclean_upstream_branch 2>/dev/null)
     if test $status -eq 0
         if test -z "$branch_commits"
-            set merge_check_status 0  # Merged
+            set merge_check_status 0 # Merged
             printf "  ✓ Commit found in upstream branch %s.\n" $_wclean_upstream_branch
         else
-            set merge_check_status 1  # Not merged
+            set merge_check_status 1 # Not merged
             printf "  ✗ Commit NOT found in upstream branch %s.\n" $_wclean_upstream_branch
         end
     else
         printf "  Error: Failed to check merge status against %s\n" $_wclean_upstream_branch >&2
-        set merge_check_status 2  # Error
+        set merge_check_status 2 # Error
     end
 
     switch $merge_check_status
@@ -479,9 +538,9 @@ function _wclean_process_worktree
 
             # Remove the worktree
             if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$_wclean_current_branch"
-                return 0  # Successfully removed
+                return 0 # Successfully removed
             else
-                return 1  # Skipped or failed
+                return 1 # Skipped or failed
             end
         case 1
             # Commit not merged, keep worktree
@@ -577,10 +636,23 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   # Maximum path length allowed
     #   set -g _wclean_config_max_path_length 4096
     #
+    #   # Fetch timeout in seconds
+    #   set -g _wclean_config_fetch_timeout 30
+    #
+    # SIGNAL HANDLING
+    #   The script handles interruption signals (Ctrl+C, SIGTERM) gracefully:
+    #   - Restores original working directory
+    #   - Cleans up temporary global variables
+    #   - Exits with appropriate status code (130 for SIGINT)
+    #
     # EXIT STATUS
     #   0    Success
     #   1    Invalid arguments or directory not found
     #   2    Git command failed
+    #   130  Interrupted by user (Ctrl+C)
+
+    # Store original directory for cleanup
+    set -g _wclean_original_dir (pwd)
 
     # Load configuration first
     _wclean_load_config
@@ -630,5 +702,8 @@ function git-wclean --description "Clean up git worktrees that have been merged 
 
     # Show summary
     _wclean_show_summary $processed_count $removed_count $skipped_count
+
+    # Clean up before exit
+    _wclean_normal_cleanup
     return 0
 end
