@@ -101,8 +101,8 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         printf "DRY-RUN MODE: Worktree will not actually be removed.\n\n"
     end
 
-    # Set up signal handling for clean interruption
-    trap 'printf "\n⚠️  Operation interrupted by user.\n"; exit 130' INT
+    # Note: Fish shell signal handling is different from bash
+    # Ctrl-C will naturally interrupt the script
 
     # Change to the worktree directory
     pushd "$worktree_path" >/dev/null

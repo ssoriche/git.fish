@@ -98,8 +98,8 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     set -l removed_count 0
     set -l skipped_count 0
 
-    # Set up signal handling for clean interruption
-    trap 'printf "\n⚠️  Operation interrupted by user.\n"; exit 130' INT
+    # Note: Fish shell signal handling is different from bash
+    # Ctrl-C will naturally interrupt the script
 
     # Iterate through each directory in the worktrees directory
     for subdir in $worktrees_dir/*/
@@ -179,13 +179,22 @@ function git-wclean --description "Clean up git worktrees that have been merged 
         # Get the main repository path while still in the worktree
         set -l main_repo ""
         if $commit_found
-            set main_repo (git rev-parse --show-toplevel 2>/dev/null)
+            # For worktrees, we need to find the main repository, not just the worktree toplevel
+            set -l git_common_dir (git rev-parse --git-common-dir 2>/dev/null)
             if test $status -ne 0
-                printf "  Error: Failed to find main repository from worktree.\n" >&2
+                printf "  Error: Failed to find git common directory from worktree.\n" >&2
                 popd >/dev/null
                 set skipped_count (math $skipped_count + 1)
                 continue
             end
+            
+            # If git-common-dir is relative, make it absolute from the current worktree
+            if not string match -q '/*' "$git_common_dir"
+                set git_common_dir "$subdir/$git_common_dir"
+            end
+            
+            # The main repository is the parent of the .git directory
+            set main_repo (dirname "$git_common_dir")
         end
 
         # Return to original directory
@@ -196,7 +205,11 @@ function git-wclean --description "Clean up git worktrees that have been merged 
             set -l worktree_name (basename $subdir)
 
             # Don't remove the main repository itself
-            if test "$worktree_name" = (basename $main_repo)
+            # Compare the full paths to determine if this is the main repository
+            set -l subdir_real (realpath "$subdir" 2>/dev/null || echo "$subdir")
+            set -l main_repo_real (realpath "$main_repo" 2>/dev/null || echo "$main_repo")
+            
+            if test "$subdir_real" = "$main_repo_real"
                 printf "  This is the main repository, cannot remove.\n"
                 set skipped_count (math $skipped_count + 1)
                 continue
