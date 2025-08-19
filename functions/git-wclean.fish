@@ -1,5 +1,41 @@
 #!/usr/bin/env fish
 
+# Security validation helper function
+function _wclean_validate_path
+    set -l path $argv[1]
+    set -l path_type $argv[2]  # Optional description for error messages
+
+    if test -z "$path_type"
+        set path_type "path"
+    end
+
+    # Check for path traversal attempts
+    if string match -q '*/..*' "$path"
+        printf "Error: Path traversal detected in %s. '..' not allowed.\n" $path_type >&2
+        return 1
+    end
+
+    # Check for suspicious patterns that could be used for injection
+    if string match -q '*|*' "$path"; or string match -q '*;*' "$path"; or string match -q '*&*' "$path"; or string match -q '*\$(*' "$path"
+        printf "Error: Potentially unsafe characters detected in %s.\n" $path_type >&2
+        return 1
+    end
+
+    # Check path length to prevent buffer overflow attacks
+    if test (string length "$path") -gt 4096
+        printf "Error: %s length exceeds maximum allowed (4096 characters).\n" $path_type >&2
+        return 1
+    end
+
+    # Check for null bytes (should not exist in valid paths)
+    if string match -q '*\0*' "$path"
+        printf "Error: Null byte detected in %s.\n" $path_type >&2
+        return 1
+    end
+
+    return 0
+end
+
 # Helper function to parse and validate arguments
 function _wclean_parse_args
     argparse --name=git-wclean h/help n/dry-run f/force no-delete-branch -- $argv
@@ -39,8 +75,19 @@ end
 
 # Helper function to validate and setup the worktrees directory
 function _wclean_setup_directory
+    # Security validation using helper function
+    if not _wclean_validate_path "$_wclean_worktrees_dir" "worktrees directory"
+        return 1
+    end
+
     if not test -d "$_wclean_worktrees_dir"
         printf "Error: Directory '%s' does not exist.\n" $_wclean_worktrees_dir >&2
+        return 1
+    end
+
+    # Security validation: Ensure directory is readable and accessible
+    if not test -r "$_wclean_worktrees_dir"
+        printf "Error: Directory '%s' is not readable.\n" $_wclean_worktrees_dir >&2
         return 1
     end
 
@@ -48,6 +95,24 @@ function _wclean_setup_directory
     set _wclean_worktrees_dir (realpath "$_wclean_worktrees_dir")
     or begin
         printf "Error: Failed to resolve path '%s'.\n" $_wclean_worktrees_dir >&2
+        return 1
+    end
+
+    # Security validation: Ensure resolved path is still within reasonable bounds
+    if not string match -q '/*' "$_wclean_worktrees_dir"
+        printf "Error: Resolved path is not absolute.\n" >&2
+        return 1
+    end
+
+    # Security validation: Prevent operations on system directories
+    if string match -q '/etc/*' "$_wclean_worktrees_dir"; or string match -q '/bin/*' "$_wclean_worktrees_dir"; or string match -q '/usr/bin/*' "$_wclean_worktrees_dir"; or string match -q '/sbin/*' "$_wclean_worktrees_dir"
+        printf "Error: Operation not allowed on system directories.\n" >&2
+        return 1
+    end
+
+    # Security validation: Ensure we have write permissions if not in dry-run mode
+    if not set -q _flag_dry_run; and not test -w "$_wclean_worktrees_dir"
+        printf "Error: No write permission for directory '%s'. Use --dry-run to preview.\n" $_wclean_worktrees_dir >&2
         return 1
     end
 
@@ -113,11 +178,16 @@ function _wclean_get_worktree_info
         return 1
     end
 
+    # Security validation
+    if not _wclean_validate_path "$worktree_path" "worktree path"
+        return 1
+    end
+
     if not test -d "$worktree_path"
         printf "  Error: Worktree path '%s' is not a directory\n" $worktree_path >&2
         return 1
     end
-    
+
     pushd "$worktree_path" >/dev/null
     or begin
         printf "  Error: Cannot access worktree directory '%s'\n" $worktree_path >&2
@@ -166,11 +236,16 @@ function _wclean_find_main_repo
         return 1
     end
 
+    # Security validation
+    if not _wclean_validate_path "$worktree_path" "worktree path"
+        return 1
+    end
+
     if not test -d "$worktree_path"
         printf "  Error: Worktree path '%s' is not a directory\n" $worktree_path >&2
         return 1
     end
-    
+
     pushd "$worktree_path" >/dev/null
     or begin
         printf "  Error: Cannot access worktree directory '%s' to find main repo\n" $worktree_path >&2
@@ -192,7 +267,7 @@ function _wclean_find_main_repo
 
     # The main repository is the parent of the .git directory
     set -l main_repo (dirname "$git_common_dir")
-    
+
     # Validate that the main repo exists and is accessible
     if not test -d "$main_repo"
         printf "  Error: Main repository directory '%s' does not exist\n" $main_repo >&2
@@ -288,13 +363,13 @@ end
 # Helper function to remove a branch
 function _wclean_remove_branch
     set -l branch_name $argv[1]
-    
+
     # Validate input
     if test -z "$branch_name"
         printf "  Error: No branch name provided for deletion\n" >&2
         return 1
     end
-    
+
     printf "  Removing associated local branch '%s'...\n" $branch_name
 
     # Check if the branch exists locally
@@ -325,6 +400,11 @@ function _wclean_process_worktree
         return 1
     end
 
+    # Security validation
+    if not _wclean_validate_path "$worktree_path" "worktree path"
+        return 1
+    end
+
     if not test -d "$worktree_path"
         return 1
     end
@@ -347,11 +427,11 @@ function _wclean_process_worktree
     pushd "$worktree_path" >/dev/null
     set -l merge_status (_wclean_check_merge_status "$worktree_path" "$_wclean_head_commit" "$_wclean_upstream_branch"; echo $status)
     popd >/dev/null
-    
+
     switch $merge_status
         case 0
             # Commit is merged, proceed with removal
-            
+
             # Find main repository
             if not _wclean_find_main_repo "$worktree_path"
                 # Error message already printed by the helper function
