@@ -195,6 +195,56 @@ function test_function_specific_issues --description "Test for specific issues i
     end
 end
 
+# Test 8: Check function formatting with fish_indent
+function test_function_formatting --description "Check that all functions are properly formatted with fish_indent"
+    # More robust path resolution for CI environments
+    set -l test_file_dir (dirname (status --current-filename))
+    set -l test_functions_dir "$test_file_dir/../functions"
+    if test -d "$test_functions_dir"
+        set test_functions_dir (realpath "$test_functions_dir")
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing function formatting..."
+
+    for func_file in $test_functions_dir/*.fish
+        set total_tests (math $total_tests + 1)
+        set -l func_name (basename $func_file)
+
+        # Format the file and compare with original
+        if fish_indent < "$func_file" > /tmp/$func_name 2>&1
+            if diff -q "$func_file" /tmp/$func_name >/dev/null 2>&1
+                echo "✅ $func_name is properly formatted"
+            else
+                echo "❌ $func_name is not properly formatted"
+                echo "   Run: fish_indent < $func_file > temp && mv temp $func_file"
+                echo "   Differences:"
+                diff -u "$func_file" /tmp/$func_name | head -20
+                set failed_tests (math $failed_tests + 1)
+            end
+            rm -f /tmp/$func_name
+        else
+            echo "❌ $func_name failed to format (fish_indent error)"
+            set failed_tests (math $failed_tests + 1)
+        end
+    end
+
+    echo ""
+    echo "📊 Formatting test results:"
+    echo "   Total files: $total_tests"
+    echo "   Failed: $failed_tests"
+    echo "   Passed: "(math $total_tests - $failed_tests)
+
+    if test $failed_tests -eq 0
+        echo "🎉 All functions are properly formatted!"
+        return 0
+    else
+        echo "💥 $failed_tests function(s) need formatting"
+        return 1
+    end
+end
+
 # Main test runner
 function run_syntax_tests --description "Run all syntax tests"
     set -l exit_code 0
@@ -207,6 +257,13 @@ function run_syntax_tests --description "Run all syntax tests"
     echo ""
 
     test_function_specific_issues
+    if test $status -ne 0
+        set exit_code 1
+    end
+
+    echo ""
+
+    test_function_formatting
     if test $status -ne 0
         set exit_code 1
     end
