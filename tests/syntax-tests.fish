@@ -87,10 +87,11 @@ function test_fish_syntax_compliance --description "Test all functions for prope
     set total_tests (math $total_tests + 1)
 
     # Look for $(...) instead of (...)
-    set -l dollar_parens (grep -rn '\$(' $test_functions_dir 2>/dev/null | grep -v '#' | wc -l)
+    # Exclude escaped versions used in security checks (e.g., '\$(') and string patterns (e.g., '*\$(*')
+    set -l dollar_parens (grep -rn '\$(' $test_functions_dir 2>/dev/null | grep -v '#' | grep -v '\\\\$(' | grep -v '\'\*\\$(\*\'' | wc -l)
     if test $dollar_parens -gt 0
         echo "❌ Found bash-style command substitution \$(...):"
-        grep -rn '\$(' $test_functions_dir | grep -v '#'
+        grep -rn '\$(' $test_functions_dir | grep -v '#' | grep -v '\\\\$(' | grep -v '\'\*\\$(\*\''
         echo "   Use (...) instead of \$(...) in fish"
         set failed_tests (math $failed_tests + 1)
     else
@@ -169,10 +170,11 @@ function test_function_specific_issues --description "Test for specific issues i
     set total_tests (math $total_tests + 1)
 
     # Look for old pattern: test -d .git (should be test -e .git for worktrees)
-    set -l wrong_git_check (grep -rn 'test -d.*\.git' $test_functions_dir | grep -v '#' | wc -l)
+    # Use more precise pattern to avoid false positives (match only test -d with .git as direct argument)
+    set -l wrong_git_check (grep -rn 'test -d[[:space:]]*["\$]*[^/]*\.git["\$]*[[:space:]]*$' $test_functions_dir | grep -v '#' | wc -l)
     if test $wrong_git_check -gt 0
         echo "❌ Found incorrect .git directory checks (should use -e for worktrees):"
-        grep -rn 'test -d.*\.git' $test_functions_dir | grep -v '#'
+        grep -rn 'test -d[[:space:]]*["\$]*[^/]*\.git["\$]*[[:space:]]*$' $test_functions_dir | grep -v '#'
         set failed_tests (math $failed_tests + 1)
     else
         echo "✅ Proper .git detection for worktrees"
