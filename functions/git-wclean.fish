@@ -1,7 +1,7 @@
 #!/usr/bin/env fish
 
-# Signal handling for clean shutdown
-function _wclean_cleanup --on-signal INT TERM
+# Signal handling for clean shutdown - shared cleanup logic
+function _wclean_cleanup_handler
     # Restore original directory if we're in a different one
     if set -q _wclean_original_dir; and test -d "$_wclean_original_dir"
         cd "$_wclean_original_dir" 2>/dev/null
@@ -26,6 +26,16 @@ function _wclean_cleanup --on-signal INT TERM
 
     printf "\n\n🚫 Operation interrupted by user. Cleanup completed.\n" >&2
     exit 130 # Standard exit code for Ctrl+C
+end
+
+# Signal handler for INT (Ctrl+C)
+function _wclean_cleanup_int --on-signal INT
+    _wclean_cleanup_handler
+end
+
+# Signal handler for TERM
+function _wclean_cleanup_term --on-signal TERM
+    _wclean_cleanup_handler
 end
 
 # Clean up function for normal exit
