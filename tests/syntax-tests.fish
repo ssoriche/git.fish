@@ -45,7 +45,7 @@ function test_fish_syntax_compliance --description "Test all functions for prope
         echo "✅ Proper semicolon usage with 'and'/'or'"
     end
 
-            # Test 3: Check for proper variable scoping (advisory only)
+    # Test 3: Check for proper variable scoping (advisory only)
     echo "Test 3: Checking for proper variable scoping (advisory)..."
     set total_tests (math $total_tests + 1)
 
@@ -98,15 +98,15 @@ function test_fish_syntax_compliance --description "Test all functions for prope
         echo "✅ Proper command substitution syntax"
     end
 
-    # Test 6: Validate all functions can be loaded without syntax errors
-    echo "Test 6: Validating function loading..."
+    # Test 6: Validate all functions can be parsed without syntax errors
+    echo "Test 6: Validating function parsing..."
     set total_tests (math $total_tests + 1)
 
     set -l syntax_errors 0
     for func_file in $test_functions_dir/*.fish
         if not fish --no-execute $func_file 2>/dev/null
             if test $syntax_errors -eq 0
-                echo "❌ Syntax errors found in functions:"
+                echo "❌ Parse errors found in functions:"
             end
             echo "   File: $func_file"
             fish --no-execute $func_file
@@ -114,7 +114,32 @@ function test_fish_syntax_compliance --description "Test all functions for prope
         end
     end
     if test $syntax_errors -eq 0
-        echo "✅ All functions load without syntax errors"
+        echo "✅ All functions parse without errors"
+    else
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 7: Actually source functions like fisher does (catches semantic errors)
+    echo "Test 7: Validating functions can be sourced (like fisher)..."
+    set total_tests (math $total_tests + 1)
+
+    set -l source_errors 0
+    for func_file in $test_functions_dir/*.fish
+        set -l func_name (basename $func_file)
+        # Try to actually source the file in a subshell to catch semantic errors
+        # like invalid --on-signal usage
+        if not fish -c "source $func_file 2>&1" >/dev/null 2>&1
+            if test $source_errors -eq 0
+                echo "❌ Source errors found in functions:"
+            end
+            echo "   File: $func_name"
+            # Show the actual error
+            fish -c "source $func_file 2>&1" 2>&1 | grep -E "function:|unexpected|error" | head -3
+            set source_errors (math $source_errors + 1)
+        end
+    end
+    if test $source_errors -eq 0
+        echo "✅ All functions can be sourced successfully"
     else
         set failed_tests (math $failed_tests + 1)
     end
@@ -213,7 +238,7 @@ function test_function_formatting --description "Check that all functions are pr
         set -l func_name (basename $func_file)
 
         # Format the file and compare with original
-        if fish_indent < "$func_file" > /tmp/$func_name 2>&1
+        if fish_indent <"$func_file" >/tmp/$func_name 2>&1
             if diff -q "$func_file" /tmp/$func_name >/dev/null 2>&1
                 echo "✅ $func_name is properly formatted"
             else
