@@ -7,6 +7,7 @@ A collection of fish shell functions to enhance your git workflow and make git w
 This package provides several enhanced git commands that integrate seamlessly with your existing git workflow:
 
 - **Smart git worktree management** with automatic upstream branch detection
+- **GitHub pull request workflow** with direct PR-to-worktree creation
 - **Interactive worktree navigation** using fzf
 - **Safe worktree cleanup** with merge verification
 - **Plain text git output** for scripting and automation
@@ -75,6 +76,33 @@ git wadd feature-456 origin/main --force
 - Automatically detects upstream branch if none specified
 - Creates new branch and worktree in one command
 - Switches to the new worktree directory after creation
+
+#### `git wpr` / `git-wpr`
+
+Create a git worktree from a GitHub pull request.
+
+```fish
+# Create worktree from PR number
+git wpr 123
+# Or with abbreviation: g wpr 123
+
+# Create worktree with custom name
+git wpr 789 my-feature-branch
+# Or: g wpr 789 my-feature-branch
+
+# Preview what would happen
+git wpr --dry-run 123
+
+# Use different remote
+git wpr --remote upstream 123
+```
+
+**Features:**
+
+- Fetches PR branch directly from GitHub
+- Creates worktree with automatic naming (pr-NUMBER)
+- Switches to the new worktree directory after creation
+- Supports custom worktree names and remote selection
 
 #### `git bclean` / `git-bclean`
 
@@ -258,6 +286,21 @@ git wjump main
 # Clean up merged worktrees
 git wclean ~/git/myproject-worktrees
 # Or: g wclean ~/git/myproject-worktrees
+```
+
+### Working with Pull Requests
+
+```fish
+# Review a pull request in a dedicated worktree
+git wpr 456
+# Or: g wpr 456
+
+# Test the changes, run builds, etc.
+# When done, jump back to your main work
+git wjump main
+
+# Remove the PR worktree after review
+git wrm pr-456
 ```
 
 ### Interactive Worktree Navigation
