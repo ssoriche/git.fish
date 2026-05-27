@@ -18,7 +18,7 @@ function setup_test_repo --description "Setup a test git repository for testing"
     git config user.name "Test User"
     git config user.email "test@example.com"
 
-    echo "# Test Repository" > README.md
+    echo "# Test Repository" >README.md
     git add README.md
     git commit -m "Initial commit" >/dev/null 2>&1
 
@@ -30,6 +30,53 @@ function cleanup_test_repo --description "Clean up test repository"
     if test -d "$test_dir"
         cd /tmp
         rm -rf "$test_dir"
+    end
+end
+
+function setup_test_bare_layout --description "Setup a .bare container layout for testing"
+    set -l base /tmp/git-fish-bare-(random)
+
+    if test -d "$base"
+        rm -rf "$base"
+    end
+
+    mkdir -p "$base"
+
+    # Create an upstream repo to clone from
+    set -l upstream "$base/upstream.git"
+    git init -q -b main --bare "$upstream"
+
+    # Seed the upstream with one commit by cloning, committing, pushing
+    set -l seed "$base/seed"
+    git clone -q "$upstream" "$seed"
+    git -C "$seed" config user.name "Test User"
+    git -C "$seed" config user.email "test@example.com"
+    echo "# Test" >"$seed/README.md"
+    git -C "$seed" add README.md
+    git -C "$seed" commit -q -m initial
+    git -C "$seed" push -q origin main
+    rm -rf "$seed"
+
+    # Build the .bare container layout
+    set -l container "$base/container"
+    mkdir -p "$container"
+    git clone -q --bare "$upstream" "$container/.bare"
+    echo "gitdir: ./.bare" >"$container/.git"
+    git -C "$container" config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
+    git -C "$container" fetch -q origin
+    git -C "$container" worktree add -q main main
+
+    # Return both the base (for cleanup) and the container path
+    echo "$base"
+    echo "$container"
+    echo "$upstream"
+end
+
+function cleanup_test_bare_layout --description "Clean up a bare-layout test fixture"
+    set -l base $argv[1]
+    if test -n "$base"; and test -d "$base"
+        cd /tmp
+        rm -rf "$base"
     end
 end
 
@@ -71,7 +118,7 @@ function test_cwb_function --description "Test the cwb (current working branch) 
 
     cd "$test_repo"
     set -l current_branch (cwb)
-    if test "$current_branch" = "main"
+    if test "$current_branch" = main
         echo "✅ cwb correctly returned 'main'"
     else
         echo "❌ cwb returned '$current_branch', expected 'main'"
@@ -84,7 +131,7 @@ function test_cwb_function --description "Test the cwb (current working branch) 
 
     git checkout -b feature-test >/dev/null 2>&1
     set current_branch (cwb)
-    if test "$current_branch" = "feature-test"
+    if test "$current_branch" = feature-test
         echo "✅ cwb correctly returned 'feature-test'"
     else
         echo "❌ cwb returned '$current_branch', expected 'feature-test'"
