@@ -66,7 +66,7 @@ function setup_test_bare_layout --description "Setup a .bare container layout fo
     git -C "$container" fetch -q origin
     git -C "$container" worktree add -q main main
 
-    # Return both the base (for cleanup) and the container path
+    # Return the base (for cleanup), the container path, and the upstream bare repo path
     echo "$base"
     echo "$container"
     echo "$upstream"
