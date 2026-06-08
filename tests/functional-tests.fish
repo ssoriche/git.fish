@@ -472,6 +472,76 @@ function test_git_wclean_dry_run --description "Test git-wclean honors --dry-run
     return $failed_tests
 end
 
+function test_git_bare_container_helper --description "Test the _git_bare_container layout-detection helper"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing _git_bare_container helper..."
+
+    set -l fixture (setup_test_bare_layout)
+    set -l base $fixture[1]
+    set -l container $fixture[2]
+    set -l failed 0
+    set -l total 0
+
+    # Source the helper into this shell
+    set -p fish_function_path $test_functions_dir
+
+    # Case 1: from container directory → prints container, exits 0
+    set total (math $total + 1)
+    set -l out (cd $container; and _git_bare_container)
+    if test "$out" = "$container"
+        echo "  ✅ Returns container path from container directory"
+    else
+        echo "  ❌ Expected '$container', got '$out'"
+        set failed (math $failed + 1)
+    end
+
+    # Case 2: from inside the initial worktree → walks up, prints container
+    set total (math $total + 1)
+    set out (cd $container/main; and _git_bare_container)
+    if test "$out" = "$container"
+        echo "  ✅ Walks up from worktree to find container"
+    else
+        echo "  ❌ Expected '$container', got '$out'"
+        set failed (math $failed + 1)
+    end
+
+    # Case 3: from a deep subdir inside the worktree → still walks up
+    set total (math $total + 1)
+    mkdir -p $container/main/deep/nested/dir
+    set out (cd $container/main/deep/nested/dir; and _git_bare_container)
+    if test "$out" = "$container"
+        echo "  ✅ Walks up from deeply nested dir"
+    else
+        echo "  ❌ Expected '$container', got '$out'"
+        set failed (math $failed + 1)
+    end
+
+    # Case 4: outside any .bare layout → returns non-zero, prints nothing
+    set total (math $total + 1)
+    set -l outside (mktemp -d)
+    set -l out_text (cd $outside; and _git_bare_container)
+    set -l out_status $status
+    if test $out_status -ne 0; and test -z "$out_text"
+        echo "  ✅ Returns non-zero when not in bare layout"
+    else
+        echo "  ❌ Expected non-zero with empty output, got status=$out_status text='$out_text'"
+        set failed (math $failed + 1)
+    end
+    rm -rf $outside
+
+    cleanup_test_bare_layout $base
+    echo "📊 _git_bare_container: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -499,6 +569,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_dry_run
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_bare_container_helper
     set total_failed (math $total_failed + $status)
 
     echo ""
