@@ -542,6 +542,88 @@ function test_git_bare_container_helper --description "Test the _git_bare_contai
     return $failed
 end
 
+function test_git_wclone_happy_path --description "Test git-wclone produces a complete bare layout"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wclone happy path..."
+
+    # We need a remote to clone from — set up an upstream-only fixture
+    set -l base /tmp/git-fish-wclone-(random)
+    mkdir -p $base
+    set -l upstream "$base/upstream.git"
+    git init -q -b main --bare $upstream
+    set -l seed "$base/seed"
+    git clone -q $upstream $seed
+    git -C $seed config user.name "Test User"
+    git -C $seed config user.email "test@example.com"
+    echo "# Test" >$seed/README.md
+    git -C $seed add README.md
+    git -C $seed commit -q -m initial
+    git -C $seed push -q origin main
+    rm -rf $seed
+
+    set -p fish_function_path $test_functions_dir
+
+    set -l dest "$base/cloned"
+    set -l failed 0
+    set -l total 0
+
+    set total (math $total + 1)
+    cd $base
+    git-wclone $upstream cloned >/dev/null 2>&1
+    set -l clone_status $status
+    if test $clone_status -eq 0
+        echo "  ✅ git-wclone exits 0 on success"
+    else
+        echo "  ❌ git-wclone exited $clone_status"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    if test -d $dest/.bare
+        echo "  ✅ Created .bare/ directory"
+    else
+        echo "  ❌ .bare/ missing"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    if test -f $dest/.git
+        echo "  ✅ Created .git pointer file"
+    else
+        echo "  ❌ .git pointer missing"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    if test -d $dest/main
+        echo "  ✅ Created initial worktree at main/"
+    else
+        echo "  ❌ Initial worktree missing"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    set -l refspec (git -C $dest config remote.origin.fetch)
+    if test "$refspec" = "+refs/heads/*:refs/remotes/origin/*"
+        echo "  ✅ remote.origin.fetch configured for remote-tracking refs"
+    else
+        echo "  ❌ refspec is '$refspec'"
+        set failed (math $failed + 1)
+    end
+
+    rm -rf $base
+    echo "📊 git-wclone happy path: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -574,6 +656,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_bare_container_helper
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclone_happy_path
     set total_failed (math $total_failed + $status)
 
     echo ""
