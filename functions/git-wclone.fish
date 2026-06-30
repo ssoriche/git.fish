@@ -1,4 +1,4 @@
-function git-wclone --description "Clone a repo into a .bare container layout for worktree workflows"
+function git-wclone --description "Clone a repo into a .bare container layout"
     # Git Worktree Clone - Creates a .bare container layout from a git URL
     #
     # SYNOPSIS
@@ -28,7 +28,7 @@ function git-wclone --description "Clone a repo into a .bare container layout fo
     #
     # EXAMPLES
     #   # Clone into ~/projects/foo/ with initial worktree at ~/projects/foo/main/
-    #   cd ~/projects && git wclone git@github.com:user/foo.git
+    #   cd ~/projects; and git wclone git@github.com:user/foo.git
     #
     #   # Clone into ~/work/myrepo/ with no initial worktree
     #   git wclone --no-checkout git@github.com:user/foo.git ~/work/myrepo
@@ -44,7 +44,9 @@ function git-wclone --description "Clone a repo into a .bare container layout fo
     if set -q _flag_help
         printf '%s\n' (status function | head -n 1)
         printf '\n'
-        functions git-wclone | string match -r '^\s*#\s.*' | string replace -r '^\s*#\s?' '' | string replace -r '^\s*#\s*$' ''
+        functions git-wclone | string match -r '^\s*#\s.*' \
+            | string replace -r '^\s*#\s?' '' \
+            | string replace -r '^\s*#\s*$' ''
         return 0
     end
 
@@ -65,13 +67,12 @@ function git-wclone --description "Clone a repo into a .bare container layout fo
     # Destination collision checks
     if test -e "$dest"
         if test -d "$dest/.bare"
-            printf "Error: %s/.bare already exists. Use a different destination or remove the existing one.\n" $dest >&2
+            printf "Error: %s/.bare already exists.\n" $dest >&2
             return 1
         end
         if test -d "$dest"
-            set -l entries (ls -A $dest 2>/dev/null)
-            if test -n "$entries"
-                printf "Error: %s exists and is not empty. Refusing to clone into a non-empty directory.\n" $dest >&2
+            if test (count (ls -A $dest 2>/dev/null)) -gt 0
+                printf "Error: %s is not empty. Refusing to clone into a non-empty directory.\n" $dest >&2
                 return 1
             end
         else
@@ -102,7 +103,7 @@ function git-wclone --description "Clone a repo into a .bare container layout fo
         return 2
     end
 
-    echo "gitdir: ./.bare" >"$dest/.git"
+    printf 'gitdir: ./.bare\n' >"$dest/.git"
 
     # Reconfigure refspec so origin/* are remote-tracking branches (not local heads).
     # Without this, `git wadd` would not see origin/main as a remote-tracking branch.
@@ -119,7 +120,8 @@ function git-wclone --description "Clone a repo into a .bare container layout fo
     end
 
     # Determine the default branch
-    set -l default_branch (git -C $dest symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | string replace 'origin/' '')
+    set -l default_branch (git -C $dest symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null \
+        | string replace 'origin/' '')
     if test -z "$default_branch"
         for b in main master
             if git -C $dest show-ref --verify --quiet refs/remotes/origin/$b
@@ -130,12 +132,14 @@ function git-wclone --description "Clone a repo into a .bare container layout fo
     end
 
     if test -z "$default_branch"
-        printf "Error: Could not determine remote default branch. Re-run with --no-checkout and create a worktree manually.\n" >&2
+        printf "Error: Could not determine default branch.\n" >&2
+        printf "Re-run with --no-checkout and create a worktree manually.\n" >&2
         return 2
     end
 
     if string match -q '*/*' -- $default_branch
-        printf "Error: default branch '%s' contains '/'; cannot create initial worktree. Re-run with --no-checkout and create one manually.\n" $default_branch >&2
+        printf "Error: default branch '%s' contains '/'.\n" $default_branch >&2
+        printf "Re-run with --no-checkout and create a worktree manually.\n" >&2
         return 2
     end
 
