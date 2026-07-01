@@ -758,6 +758,121 @@ function test_git_wclone_no_checkout --description "Test git-wclone --no-checkou
     return $failed
 end
 
+function test_git_wadd_bare_layout_anchors --description "git-wadd anchors worktree name to container in bare layout"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wadd anchoring in bare layout..."
+
+    set -l fixture (setup_test_bare_layout)
+    set -l base $fixture[1]
+    set -l container $fixture[2]
+    set -l failed 0
+    set -l total 0
+
+    set -p fish_function_path $test_functions_dir
+
+    # Run wadd from inside the initial worktree
+    set total (math $total + 1)
+    cd $container/main
+    git-wadd feature-x >/dev/null 2>&1
+    if test -d "$container/feature-x"; and not test -d "$container/main/feature-x"
+        echo "  ✅ Worktree created at <container>/feature-x, not nested"
+    else
+        echo "  ❌ Worktree placement wrong (container/feature-x exists: "(test -d $container/feature-x; and echo yes; or echo no)", nested: "(test -d $container/main/feature-x; and echo yes; or echo no)")"
+        set failed (math $failed + 1)
+    end
+
+    cleanup_test_bare_layout $base
+    echo "📊 git-wadd anchoring: $total tests, $failed failed"
+    return $failed
+end
+
+function test_git_wadd_bare_layout_rejects_slash --description "git-wadd rejects names with / in bare layout"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wadd / rejection in bare layout..."
+
+    set -l fixture (setup_test_bare_layout)
+    set -l base $fixture[1]
+    set -l container $fixture[2]
+    set -l failed 0
+    set -l total 0
+
+    set -p fish_function_path $test_functions_dir
+
+    set total (math $total + 1)
+    cd $container/main
+    set -l err (git-wadd ssoriche/feature-x 2>&1 >/dev/null)
+    set -l rc $status
+    if test $rc -ne 0; and string match -q '*cannot contain*' -- "$err"
+        echo "  ✅ Rejects name containing /"
+    else
+        echo "  ❌ Did not reject (rc=$rc, err='$err')"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    if not test -d "$container/ssoriche"; and not test -d "$container/main/ssoriche"
+        echo "  ✅ No worktree created"
+    else
+        echo "  ❌ A worktree was created despite the rejection"
+        set failed (math $failed + 1)
+    end
+
+    cleanup_test_bare_layout $base
+    echo "📊 git-wadd slash rejection: $total tests, $failed failed"
+    return $failed
+end
+
+function test_git_wadd_non_bare_preserves_path --description "git-wadd in non-bare repo uses cwd-relative path (current behavior)"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wadd non-bare backward compat..."
+
+    set -l test_repo (setup_test_repo)
+    set -l failed 0
+    set -l total 0
+
+    set -p fish_function_path $test_functions_dir
+
+    set total (math $total + 1)
+    cd $test_repo
+    # Key check: _git_bare_container returns non-zero from a non-bare repo
+    _git_bare_container >/dev/null
+    set -l detect $status
+    if test $detect -ne 0
+        echo "  ✅ Helper correctly reports non-bare layout"
+    else
+        echo "  ❌ Helper falsely reports a bare layout"
+        set failed (math $failed + 1)
+    end
+
+    cleanup_test_repo $test_repo
+    echo "📊 git-wadd non-bare: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -805,6 +920,21 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclone_refuses_collision
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wadd_bare_layout_anchors
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wadd_bare_layout_rejects_slash
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wadd_non_bare_preserves_path
     set total_failed (math $total_failed + $status)
 
     echo ""

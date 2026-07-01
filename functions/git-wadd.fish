@@ -62,6 +62,18 @@ function git-wadd --description "Create a new git worktree and branch"
     set -l branch_name $argv[2]
     set -l extra_args $argv[3..-1]
 
+    # Layout-aware path resolution: in a bare layout, the argument is a worktree NAME
+    # (anchored to the container directory), not a path.
+    set -l worktree_path $worktree_name
+    set -l _container (_git_bare_container)
+    if test $status -eq 0
+        if string match -q '*/*' -- $worktree_name
+            printf "Error: worktree name '%s' contains '/'. In a bare layout, worktree names cannot contain '/' (try using '.' or '-' as separator).\n" $worktree_name >&2
+            return 1
+        end
+        set worktree_path "$_container/$worktree_name"
+    end
+
     # If no branch name provided, determine upstream branch
     if test -z "$branch_name"
         set -l upstream_branch (git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
@@ -77,13 +89,13 @@ function git-wadd --description "Create a new git worktree and branch"
     printf "Creating worktree '%s' from branch '%s'...\n" $worktree_name $branch_name
 
     # Create the worktree with new branch
-    if git worktree add -b $worktree_name $worktree_name $branch_name $extra_args
+    if git worktree add -b $worktree_name $worktree_path $branch_name $extra_args
         printf "✓ Successfully created worktree: %s\n" $worktree_name
 
         # Change to the new worktree directory
-        if test -d "$worktree_name"
+        if test -d "$worktree_path"
             printf "Changing to worktree directory...\n"
-            cd $worktree_name
+            cd $worktree_path
             or begin
                 printf "Warning: Failed to change to worktree directory.\n" >&2
             end
@@ -93,7 +105,7 @@ function git-wadd --description "Create a new git worktree and branch"
 
         return 0
     else
-        printf "Error: Failed to create worktree '%s'.\n" $worktree_name >&2
+        printf "Error: Failed to create worktree '%s'.\n" $worktree_path >&2
         return 2
     end
 end
