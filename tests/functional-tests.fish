@@ -624,6 +624,140 @@ function test_git_wclone_happy_path --description "Test git-wclone produces a co
     return $failed
 end
 
+function test_git_wclone_refuses_collision --description "Test git-wclone refuses non-empty or pre-existing destinations"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wclone collision refusal..."
+
+    set -l base /tmp/git-fish-wclone-coll-(random)
+    mkdir -p $base
+    set -l upstream "$base/upstream.git"
+    git init -q -b main --bare $upstream
+    set -l seed "$base/seed"
+    git clone -q $upstream $seed
+    git -C $seed config user.name "Test User"
+    git -C $seed config user.email "test@example.com"
+    echo "# Test" >$seed/README.md
+    git -C $seed add README.md
+    git -C $seed commit -q -m initial
+    git -C $seed push -q origin main
+    rm -rf $seed
+
+    set -p fish_function_path $test_functions_dir
+
+    cd $base
+    set -l failed 0
+    set -l total 0
+
+    # Case 1: destination contains arbitrary files → refuse
+    set total (math $total + 1)
+    mkdir -p $base/conflict
+    echo junk >$base/conflict/stuff.txt
+    git-wclone $upstream conflict >/dev/null 2>&1
+    if test $status -eq 1
+        echo "  ✅ Refuses non-empty dest with exit 1"
+    else
+        echo "  ❌ Did not refuse non-empty dest (status was $status)"
+        set failed (math $failed + 1)
+    end
+
+    # Case 2: destination already contains .bare/ → refuse
+    set total (math $total + 1)
+    mkdir -p $base/withbare/.bare
+    git-wclone $upstream withbare >/dev/null 2>&1
+    if test $status -eq 1
+        echo "  ✅ Refuses dest with existing .bare/ with exit 1"
+    else
+        echo "  ❌ Did not refuse dest with .bare/ (status was $status)"
+        set failed (math $failed + 1)
+    end
+
+    # Case 3: destination is empty → proceeds
+    set total (math $total + 1)
+    mkdir -p $base/empty
+    git-wclone $upstream empty >/dev/null 2>&1
+    if test $status -eq 0
+        echo "  ✅ Empty dest proceeds"
+    else
+        echo "  ❌ Refused empty dest (status was $status)"
+        set failed (math $failed + 1)
+    end
+
+    rm -rf $base
+    echo "📊 git-wclone collision: $total tests, $failed failed"
+    return $failed
+end
+
+function test_git_wclone_no_checkout --description "Test git-wclone --no-checkout skips initial worktree"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wclone --no-checkout..."
+
+    set -l base /tmp/git-fish-wclone-nc-(random)
+    mkdir -p $base
+    set -l upstream "$base/upstream.git"
+    git init -q -b main --bare $upstream
+    set -l seed "$base/seed"
+    git clone -q $upstream $seed
+    git -C $seed config user.name "Test User"
+    git -C $seed config user.email "test@example.com"
+    echo "# Test" >$seed/README.md
+    git -C $seed add README.md
+    git -C $seed commit -q -m initial
+    git -C $seed push -q origin main
+    rm -rf $seed
+
+    set -p fish_function_path $test_functions_dir
+
+    cd $base
+    set -l dest "$base/cloned"
+    set -l failed 0
+    set -l total 0
+
+    set total (math $total + 1)
+    git-wclone --no-checkout $upstream cloned >/dev/null 2>&1
+    if test $status -eq 0
+        echo "  ✅ Exits 0"
+    else
+        echo "  ❌ Exited non-zero"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    if test -d $dest/.bare
+        echo "  ✅ Created .bare/"
+    else
+        echo "  ❌ .bare/ missing"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    if not test -d $dest/main
+        echo "  ✅ No initial worktree created"
+    else
+        echo "  ❌ Initial worktree created despite --no-checkout"
+        set failed (math $failed + 1)
+    end
+
+    rm -rf $base
+    echo "📊 git-wclone --no-checkout: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -661,6 +795,16 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclone_happy_path
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclone_no_checkout
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclone_refuses_collision
     set total_failed (math $total_failed + $status)
 
     echo ""
