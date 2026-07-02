@@ -64,14 +64,11 @@ function git-wadd --description "Create a new git worktree and branch"
 
     # Layout-aware path resolution: in a bare layout, the argument is a worktree NAME
     # (anchored to the container directory), not a path.
-    set -l worktree_path $worktree_name
-    set -l _container (_git_bare_container)
-    if test $status -eq 0
-        if string match -q '*/*' -- $worktree_name
-            printf "Error: worktree name '%s' contains '/'. In a bare layout, worktree names cannot contain '/' (try using '.' or '-' as separator).\n" $worktree_name >&2
-            return 1
-        end
-        set worktree_path "$_container/$worktree_name"
+    set -l worktree_path (_git_bare_worktree_path $worktree_name)
+    if test $status -ne 0
+        printf "Error: worktree name '%s' contains '/'. In a bare layout,\n" $worktree_name >&2
+        printf "worktree names cannot contain '/' (try using '.' or '-' as separator).\n" >&2
+        return 1
     end
 
     # If no branch name provided, determine upstream branch

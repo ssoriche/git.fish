@@ -838,7 +838,7 @@ function test_git_wadd_bare_layout_rejects_slash --description "git-wadd rejects
     return $failed
 end
 
-function test_git_wadd_non_bare_preserves_path --description "git-wadd in non-bare repo uses cwd-relative path (current behavior)"
+function test_git_wadd_non_bare_preserves_path --description "git-wadd in non-bare repo creates worktree relative to cwd"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
         set -l test_file_dir (dirname (status --current-filename))
@@ -850,25 +850,51 @@ function test_git_wadd_non_bare_preserves_path --description "git-wadd in non-ba
 
     echo "🔍 Testing git-wadd non-bare backward compat..."
 
-    set -l test_repo (setup_test_repo)
-    set -l failed 0
-    set -l total 0
+    # Build a plain clone (not a .bare layout) from a seeded upstream
+    set -l base /tmp/git-fish-wadd-nonbare-(random)
+    mkdir -p $base
+    set -l upstream "$base/upstream.git"
+    git init -q -b main --bare $upstream
+    set -l seed "$base/seed"
+    git clone -q $upstream $seed
+    git -C $seed config user.name "Test User"
+    git -C $seed config user.email "test@example.com"
+    echo "# Test" >$seed/README.md
+    git -C $seed add README.md
+    git -C $seed commit -q -m initial
+    git -C $seed push -q origin main
+    rm -rf $seed
+    set -l clone_dir "$base/plain-clone"
+    git clone -q $upstream $clone_dir
 
     set -p fish_function_path $test_functions_dir
 
+    set -l failed 0
+    set -l total 0
+
+    cd $clone_dir
+
+    # Verify detection correctly reports non-bare
     set total (math $total + 1)
-    cd $test_repo
-    # Key check: _git_bare_container returns non-zero from a non-bare repo
     _git_bare_container >/dev/null
-    set -l detect $status
-    if test $detect -ne 0
-        echo "  ✅ Helper correctly reports non-bare layout"
+    if test $status -ne 0
+        echo "  ✅ Not in a bare layout (detection correct)"
     else
-        echo "  ❌ Helper falsely reports a bare layout"
+        echo "  ❌ Falsely detected bare layout in plain clone"
         set failed (math $failed + 1)
     end
 
-    cleanup_test_repo $test_repo
+    # git-wadd should create the worktree relative to cwd, not anchored elsewhere
+    set total (math $total + 1)
+    git-wadd feature-x origin/main >/dev/null 2>&1
+    if test -d "$clone_dir/feature-x"; and not test -d "$base/feature-x"
+        echo "  ✅ Worktree created cwd-relative, not anchored to parent"
+    else
+        echo "  ❌ Worktree not at expected cwd-relative location"
+        set failed (math $failed + 1)
+    end
+
+    rm -rf $base
     echo "📊 git-wadd non-bare: $total tests, $failed failed"
     return $failed
 end
