@@ -84,9 +84,17 @@ function git-wpr --description "Create a git worktree from a GitHub pull request
 
     set -l branch_name "pr-$pr_number"
 
+    # Layout-aware path resolution (see git-wadd for context)
+    set -l worktree_path (_git_bare_worktree_path $worktree_name)
+    if test $status -ne 0
+        printf "Error: worktree name '%s' contains '/'. In a bare layout,\n" $worktree_name >&2
+        printf "worktree names cannot contain '/' (try using '.' or '-' as separator).\n" >&2
+        return 1
+    end
+
     if set -q _flag_dry_run
         printf "Would fetch: %s pull/%s/head:%s\n" $remote_name $pr_number $branch_name
-        printf "Would create worktree: %s (branch: %s)\n" $worktree_name $branch_name
+        printf "Would create worktree: %s (branch: %s)\n" $worktree_path $branch_name
         return 0
     end
 
@@ -98,16 +106,16 @@ function git-wpr --description "Create a git worktree from a GitHub pull request
         return 3
     end
 
-    printf "Creating worktree '%s' for PR #%s...\n" $worktree_name $pr_number
+    printf "Creating worktree '%s' for PR #%s...\n" $worktree_path $pr_number
 
     # Create the worktree using the fetched branch
-    if git worktree add $worktree_name $branch_name
-        printf "✓ Successfully created worktree for PR #%s: %s\n" $pr_number $worktree_name
+    if git worktree add $worktree_path $branch_name
+        printf "✓ Successfully created worktree for PR #%s: %s\n" $pr_number $worktree_path
 
         # Change to the new worktree directory
-        if test -d "$worktree_name"
+        if test -d "$worktree_path"
             printf "Changing to worktree directory...\n"
-            cd $worktree_name
+            cd $worktree_path
             or begin
                 printf "Warning: Failed to change to worktree directory.\n" >&2
             end
@@ -117,7 +125,7 @@ function git-wpr --description "Create a git worktree from a GitHub pull request
 
         return 0
     else
-        printf "Error: Failed to create worktree '%s'.\n" $worktree_name >&2
+        printf "Error: Failed to create worktree '%s'.\n" $worktree_path >&2
         printf "The branch '%s' was fetched but worktree creation failed.\n" $branch_name >&2
         return 2
     end
