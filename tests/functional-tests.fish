@@ -899,6 +899,47 @@ function test_git_wadd_non_bare_preserves_path --description "git-wadd in non-ba
     return $failed
 end
 
+function test_git_wrm_bare_layout_anchors --description "git-wrm resolves worktree name relative to container in bare layout"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wrm anchoring in bare layout..."
+
+    set -l fixture (setup_test_bare_layout)
+    set -l base $fixture[1]
+    set -l container $fixture[2]
+    set -l failed 0
+    set -l total 0
+
+    set -p fish_function_path $test_functions_dir
+
+    # Create the worktree directly at the container-anchored location git-wadd would use.
+    cd $container/main
+    git worktree add -q -b feature-y "$container/feature-y" main >/dev/null 2>&1
+
+    # If git-wrm resolved "feature-y" relative to cwd (container/main) instead of the
+    # container, it would look for container/main/feature-y and fail with "does not exist".
+    set total (math $total + 1)
+    set -l out (git-wrm --dry-run feature-y 2>&1)
+    set -l rc $status
+    if test $rc -eq 0; and not string match -q '*does not exist*' -- "$out"
+        echo "  ✅ Resolved worktree name relative to container, not cwd"
+    else
+        echo "  ❌ Did not resolve relative to container (rc=$rc, out='$out')"
+        set failed (math $failed + 1)
+    end
+
+    cleanup_test_bare_layout $base
+    echo "📊 git-wrm anchoring: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -961,6 +1002,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wadd_non_bare_preserves_path
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wrm_bare_layout_anchors
     set total_failed (math $total_failed + $status)
 
     echo ""
