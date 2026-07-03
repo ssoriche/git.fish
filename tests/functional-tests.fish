@@ -940,6 +940,42 @@ function test_git_wrm_bare_layout_anchors --description "git-wrm resolves worktr
     return $failed
 end
 
+function test_git_wpr_bare_layout_anchors --description "git-wpr anchors worktree name to container in bare layout"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wpr anchoring in bare layout..."
+
+    set -l fixture (setup_test_bare_layout)
+    set -l base $fixture[1]
+    set -l container $fixture[2]
+    set -l failed 0
+    set -l total 0
+
+    set -p fish_function_path $test_functions_dir
+
+    # Dry-run avoids needing a real PR fetch; it still exercises path resolution.
+    set total (math $total + 1)
+    cd $container/main
+    set -l out (git-wpr --dry-run 123 feature-pr 2>&1)
+    if string match -q "*Would create worktree: $container/feature-pr *" -- "$out"
+        echo "  ✅ Worktree would be created at <container>/feature-pr, not nested"
+    else
+        echo "  ❌ Worktree placement wrong: '$out'"
+        set failed (math $failed + 1)
+    end
+
+    cleanup_test_bare_layout $base
+    echo "📊 git-wpr anchoring: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -1007,6 +1043,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wrm_bare_layout_anchors
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wpr_bare_layout_anchors
     set total_failed (math $total_failed + $status)
 
     echo ""
