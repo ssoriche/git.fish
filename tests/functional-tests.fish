@@ -976,6 +976,46 @@ function test_git_wpr_bare_layout_anchors --description "git-wpr anchors worktre
     return $failed
 end
 
+function test_git_wclean_bare_layout_default --description "git-wclean defaults to container directory in bare layout"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wclean default in bare layout..."
+
+    set -l fixture (setup_test_bare_layout)
+    set -l base $fixture[1]
+    set -l container $fixture[2]
+    set -l failed 0
+    set -l total 0
+
+    set -p fish_function_path $test_functions_dir
+
+    # Invoke wclean with no args while inside the initial worktree.
+    # We're testing that the path argument is implicitly defaulted to the container —
+    # not the cleanup outcome (which depends on the existing worktree-state logic).
+    # A success signal: wclean does NOT fail with a "missing argument" error.
+    set total (math $total + 1)
+    cd $container/main
+    set -l err (git-wclean --dry-run 2>&1)
+    set -l rc $status
+    if not string match -q '*Missing*argument*' -- "$err"; and not string match -q '*Usage*' -- "$err"
+        echo "  ✅ wclean accepted no-arg invocation in bare layout"
+    else
+        echo "  ❌ wclean rejected no-arg invocation: '$err'"
+        set failed (math $failed + 1)
+    end
+
+    cleanup_test_bare_layout $base
+    echo "📊 git-wclean bare default: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -1048,6 +1088,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wpr_bare_layout_anchors
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_bare_layout_default
     set total_failed (math $total_failed + $status)
 
     echo ""

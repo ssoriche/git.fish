@@ -143,6 +143,14 @@ function _wclean_parse_args
         return 0
     end
 
+    # Layout-aware default: in a .bare layout, if no path was given, use the container
+    if test (count $argv) -eq 0
+        set -l _container (_git_bare_container)
+        if test $status -eq 0
+            set argv $_container
+        end
+    end
+
     # Check if directory path is provided
     if test (count $argv) -eq 0
         printf "Error: Missing required argument <worktrees-directory>\n" >&2
