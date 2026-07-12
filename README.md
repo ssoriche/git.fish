@@ -6,7 +6,8 @@ A collection of fish shell functions to enhance your git workflow and make git w
 
 This package provides several enhanced git commands that integrate seamlessly with your existing git workflow:
 
-- **Smart git worktree management** with automatic upstream branch detection
+- **One-shot bare-layout clone** with `git wclone` — the entry point for the canonical `.bare` workflow
+- **Layout-aware worktree management** with automatic upstream branch detection, anchored to the bare layout
 - **GitHub pull request workflow** with direct PR-to-worktree creation
 - **Interactive worktree navigation** using fzf
 - **Safe worktree cleanup** with merge verification
@@ -51,6 +52,55 @@ g wclean ~/worktrees  # Same as: git wclean ~/worktrees
 ```
 
 ## Commands
+
+### The Bare Layout
+
+git.fish standardizes on the **bare container layout**. Each cloned project lives in a single
+directory containing:
+
+- `.bare/` — the bare git repository
+- `.git` — a small text file pointing at `.bare/` (lets git commands work from the container)
+- One subdirectory per worktree (e.g., `main/`, `feature-x/`, `ssoriche.something/`) as siblings
+
+`git wclone` constructs this layout. Once you're inside any worktree, `git wadd`, `git wpr`,
+`git wrm`, and `git wclean` automatically anchor their operations to the container directory —
+you don't have to `cd` around.
+
+```
+~/projects/myrepo/
+├── .bare/
+├── .git              ← points at .bare
+├── main/             ← initial worktree
+└── feature-x/        ← created by `git wadd feature-x` from any worktree
+```
+
+See [ADR 0001](docs/adr/0001-canonical-bare-layout.md) for why this layout is canonical.
+
+### `git wclone` / `git-wclone`
+
+Clone a remote into a fresh `.bare` container layout — the entry point for the canonical workflow.
+
+```fish
+# Clone into ~/projects/myrepo/ with initial worktree at ~/projects/myrepo/main/
+cd ~/projects
+git wclone git@github.com:user/myrepo.git
+
+# Clone with a custom destination directory
+git wclone git@github.com:user/myrepo.git ~/work/myrepo
+
+# Clone bare-only — no initial worktree
+git wclone --no-checkout git@github.com:user/myrepo.git
+
+# Preview without performing
+git wclone --dry-run git@github.com:user/myrepo.git
+```
+
+**Features:**
+
+- Builds the canonical `.bare` container layout in one command
+- Configures the fetch refspec so `origin/*` are normal remote-tracking branches (required for `git wadd`)
+- Creates an initial worktree for the remote's default branch and changes into it
+- Refuses to clobber non-empty destinations
 
 ### Worktree Management
 
@@ -269,74 +319,54 @@ The `git` function enhances the standard git command by:
 
 ## Common Workflows
 
-### Creating and Managing Feature Branches
+### Starting a new project
 
 ```fish
-# Create a new feature worktree
-git wadd feature-user-auth
-# Or: g wadd feature-user-auth
+# Clone into the canonical .bare layout; you land inside main/
+cd ~/projects
+git wclone git@github.com:user/myrepo.git
 
-# Work on your feature...
-# (commits, pushes, etc.)
-
-# When done, jump back to main worktree
-git wjump main
-# Or: g wjump main
-
-# Clean up merged worktrees
-git wclean ~/git/myproject-worktrees
-# Or: g wclean ~/git/myproject-worktrees
+# You're now in ~/projects/myrepo/main/, ready to work
 ```
 
-### Working with Pull Requests
+### Creating and managing feature branches
 
 ```fish
-# Review a pull request in a dedicated worktree
-git wpr 456
-# Or: g wpr 456
+# From inside any worktree:
+git wadd feature-user-auth
+# Or with a github-id prefix (use . or - as separator, not /):
+git wadd ssoriche.user-auth
 
-# Test the changes, run builds, etc.
-# When done, jump back to your main work
+# Both create their worktree as a sibling of .bare/, NOT nested inside main/.
+# You are automatically cd'd into the new worktree.
+
+# Jump back to main
+git wjump main
+```
+
+### Working with pull requests
+
+```fish
+# Review a PR in a dedicated worktree (auto-anchored to the container)
+git wpr 456
+
+# Test the changes, then jump back to your main work
 git wjump main
 
-# Remove the PR worktree after review
+# When done with the PR, remove the worktree
 git wrm pr-456
 ```
 
-### Interactive Worktree Navigation
+### Cleaning up
 
 ```fish
-# Quickly switch between worktrees
-git wjump
-# Or: g wjump
+# From any worktree, clean up merged worktrees in the container
+git wclean --dry-run    # preview
+git wclean              # do it
 
-# Search for specific worktrees
-git wjump hotfix
-# Or: g wjump hotfix
-```
-
-### Safe Worktree Cleanup
-
-```fish
-# Remove a specific worktree safely
-git wrm ~/worktrees/completed-feature
-
-# Bulk cleanup of merged worktrees
-git wclean --dry-run ~/worktrees  # Preview first
-git wclean ~/worktrees            # Actually clean up
-```
-
-### Branch and Worktree Maintenance
-
-```fish
-# Complete cleanup workflow after merging features
-git bclean --dry-run    # Preview merged branches to remove
-git bclean              # Remove merged local branches
-git wclean ~/worktrees  # Clean up merged worktrees
-
-# Selective cleanup with skip patterns
-git bclean --skip "staging,release" --skip "hotfix/*"
-git bclean --dry-run --skip "*-wip" --skip "feature/experimental*"
+# Clean up merged local branches too
+git bclean --dry-run
+git bclean
 ```
 
 ## Configuration
@@ -362,31 +392,34 @@ Optional tools that enhance the experience:
 
 ## Best Practices
 
-1. **Use upstream tracking**: Set up upstream branches for automatic branch detection
+1. **Start every project with `git wclone`**. It builds the canonical bare layout and configures
+   the refspec correctly. Doing this by hand is error-prone.
+
+2. **Stay inside a worktree**. The worktree commands (`wadd`, `wpr`, `wrm`, `wclean`) detect the
+   bare layout and anchor everything to the container directory automatically — you never need to
+   `cd` to the container to manage worktrees.
+
+3. **Use `.` or `-` as separators in worktree names**. Worktree names with `/` are rejected in a
+   bare layout to keep the container directory flat. Branch names can still contain `/` freely.
 
    ```fish
-   git branch --set-upstream-to=origin/main
+   git wadd ssoriche.feat-x   # ✓
+   git wadd ssoriche-feat-x   # ✓
+   git wadd ssoriche/feat-x   # ✗ rejected
    ```
 
-2. **Organize worktrees**: Keep worktrees in a dedicated directory
+4. **Regular cleanup**. Use `--dry-run` to preview, then run the cleanup:
 
    ```fish
-   mkdir ~/git/myproject-worktrees
-   cd ~/git/myproject
-   git wadd ~/git/myproject-worktrees/feature-123
+   git wclean --dry-run    # preview
+   git wclean              # cleans merged worktrees in the container
    ```
 
-3. **Regular cleanup**: Periodically clean up merged worktrees
+5. **Use `--help`**. Every command has detailed help:
 
    ```fish
-   git wclean --dry-run ~/git/myproject-worktrees
-   ```
-
-4. **Use help**: All functions have comprehensive help
-
-   ```fish
+   git wclone --help
    git wadd --help
-   git wclean --help
    # etc.
    ```
 
