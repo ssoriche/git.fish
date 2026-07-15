@@ -17,6 +17,11 @@ function _wclean_cleanup_handler
     set -e _wclean_default_branch
     set -e _wclean_original_dir
 
+    # Clean up promoted argparse flags
+    set -e _wclean_flag_dry_run
+    set -e _wclean_flag_force
+    set -e _wclean_flag_no_delete_branch
+
     # Clean up config variables
     set -e _wclean_config_protected_branches
     set -e _wclean_config_default_upstream
@@ -55,6 +60,11 @@ function _wclean_normal_cleanup
     set -e _wclean_default_branch
     set -e _wclean_original_dir
 
+    # Clean up promoted argparse flags
+    set -e _wclean_flag_dry_run
+    set -e _wclean_flag_force
+    set -e _wclean_flag_no_delete_branch
+
     # Clean up config variables
     set -e _wclean_config_protected_branches
     set -e _wclean_config_default_upstream
@@ -67,7 +77,9 @@ end
 function _wclean_load_config
     # Set default configuration values
     set -g _wclean_config_protected_branches main master develop trunk
-    set -g _wclean_config_default_upstream origin/main
+    # Empty by default: the integration branch is auto-detected from origin/HEAD.
+    # Set this in a config file ONLY to override that detection explicitly.
+    set -g _wclean_config_default_upstream ""
     set -g _wclean_config_system_dirs /etc /bin /usr/bin /sbin /usr/sbin
     set -g _wclean_config_max_path_length 4096
     set -g _wclean_config_fetch_timeout 30
@@ -145,6 +157,16 @@ function _wclean_parse_args
         return 1
     end
 
+    # argparse populates _flag_* only in THIS function's local scope. The helper
+    # functions run in separate scopes and cannot see those locals, so promote
+    # the flags they need to globals (cleaned up in the cleanup handlers).
+    set -e _wclean_flag_dry_run
+    set -e _wclean_flag_force
+    set -e _wclean_flag_no_delete_branch
+    set -q _flag_dry_run; and set -g _wclean_flag_dry_run
+    set -q _flag_force; and set -g _wclean_flag_force
+    set -q _flag_no_delete_branch; and set -g _wclean_flag_no_delete_branch
+
     # Set the global worktrees directory
     set -g _wclean_worktrees_dir $argv[1]
     return 0
@@ -197,14 +219,14 @@ function _wclean_setup_directory
     end
 
     # Security validation: Ensure we have write permissions if not in dry-run mode
-    if not set -q _flag_dry_run; and not test -w "$_wclean_worktrees_dir"
+    if not set -q _wclean_flag_dry_run; and not test -w "$_wclean_worktrees_dir"
         printf "Error: No write permission for directory '%s'. Use --dry-run to preview.\n" $_wclean_worktrees_dir >&2
         return 1
     end
 
     printf "Scanning worktrees in: %s\n" $_wclean_worktrees_dir
 
-    if set -q _flag_dry_run
+    if set -q _wclean_flag_dry_run
         printf "DRY-RUN MODE: No worktrees will actually be removed.\n\n"
     end
     return 0
@@ -221,15 +243,34 @@ function _wclean_fetch_remotes
         set -g _wclean_remotes ""
     end
 
-    # Try to fetch from origin if it exists (with timeout)
+    # Try to fetch from origin if it exists. Guard the fetch with a timeout
+    # utility when one is available (`timeout` on Linux, `gtimeout` from GNU
+    # coreutils on macOS); otherwise fetch without a timeout rather than failing
+    # on the missing command.
     if contains origin $_wclean_remotes
-        printf "Fetching from origin (timeout: %ds)...\n" $_wclean_config_fetch_timeout
-        if timeout $_wclean_config_fetch_timeout git fetch origin >/dev/null 2>&1
-            printf "✓ Fetched from origin\n"
+        set -l timeout_cmd
+        if command -q timeout
+            set timeout_cmd timeout
+        else if command -q gtimeout
+            set timeout_cmd gtimeout
+        end
+
+        if test -n "$timeout_cmd"
+            printf "Fetching from origin (timeout: %ds)...\n" $_wclean_config_fetch_timeout
+            if $timeout_cmd $_wclean_config_fetch_timeout git fetch origin >/dev/null 2>&1
+                printf "✓ Fetched from origin\n"
+            else
+                set -l fetch_status $status
+                if test $fetch_status -eq 124 # timeout exit code
+                    printf "⚠️  Warning: Fetch from origin timed out after %ds. Proceeding with local information.\n" $_wclean_config_fetch_timeout
+                else
+                    printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
+                end
+            end
         else
-            set -l fetch_status $status
-            if test $fetch_status -eq 124 # timeout exit code
-                printf "⚠️  Warning: Fetch from origin timed out after %ds. Proceeding with local information.\n" $_wclean_config_fetch_timeout
+            printf "Fetching from origin (no timeout utility found)...\n"
+            if git fetch origin >/dev/null 2>&1
+                printf "✓ Fetched from origin\n"
             else
                 printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
             end
@@ -238,10 +279,20 @@ function _wclean_fetch_remotes
         printf "⚠️  Note: No 'origin' remote found.\n"
     end
 
-    # Cache default branch information for better performance
+    # Determine the integration branch from origin/HEAD. An explicit config
+    # override takes precedence; otherwise require origin/HEAD rather than
+    # silently assuming origin/main, which could delete unmerged work.
     set -g _wclean_default_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | string replace 'refs/remotes/' '')
-    if test $status -ne 0; or test -z "$_wclean_default_branch"
-        set -g _wclean_default_branch $_wclean_config_default_upstream
+    if test -z "$_wclean_default_branch"
+        if test -n "$_wclean_config_default_upstream"
+            set -g _wclean_default_branch $_wclean_config_default_upstream
+        else
+            printf "Error: Cannot determine the default branch — 'origin/HEAD' is not set.\n" >&2
+            printf "Set it (and retry) with:\n" >&2
+            printf "    git remote set-head origin --auto\n" >&2
+            printf "Or set _wclean_config_default_upstream in your git-wclean config.\n" >&2
+            return 1
+        end
     end
 
     printf "\n"
@@ -314,15 +365,12 @@ function _wclean_get_worktree_info
         set current_branch_name ""
     end
 
-    # Determine the upstream branch
-    set -l upstream_branch (git -C "$worktree_path" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
-    if test $status -ne 0
-        # Use cached default branch instead of hardcoded origin/main
-        set upstream_branch $_wclean_default_branch
-        printf "  No upstream branch configured, using %s as default.\n" $upstream_branch
-    else
-        printf "  Upstream branch: %s\n" $upstream_branch
-    end
+    # Verify against the upstream project's default branch (origin/HEAD, cached
+    # in _wclean_default_branch), NOT the worktree branch's own remote-tracking
+    # branch (@{upstream}) — a feature branch pushed to origin/<feature> would
+    # always "match" itself and defeat the merge check.
+    set -l upstream_branch $_wclean_default_branch
+    printf "  Integration branch: %s\n" $upstream_branch
 
     # Export results as global variables for the caller
     set -g _wclean_head_commit $head_commit
@@ -407,7 +455,7 @@ function _wclean_remove_worktree
     set -l worktree_name (basename $worktree_path)
 
     # Protect main worktrees from accidental removal (unless --force is used)
-    if contains "$worktree_name" $_wclean_config_protected_branches; and not set -q _flag_force
+    if contains "$worktree_name" $_wclean_config_protected_branches; and not set -q _wclean_flag_force
         printf "  Protected: '%s' worktree will not be removed for safety.\n" $worktree_name
         return 1
     end
@@ -428,12 +476,12 @@ function _wclean_remove_worktree
         return 1
     end
 
-    if set -q _flag_dry_run
+    if set -q _wclean_flag_dry_run
         printf "Would remove worktree: %s\n" $worktree_name
         # Show branch deletion info
-        if test -n "$current_branch_name"; and not set -q _flag_no_delete_branch
+        if test -n "$current_branch_name"; and not set -q _wclean_flag_no_delete_branch
             printf "  Would also delete local branch: %s\n" $current_branch_name
-        else if set -q _flag_no_delete_branch
+        else if set -q _wclean_flag_no_delete_branch
             printf "  Would keep local branch: %s\n" $current_branch_name
         end
     else
@@ -441,7 +489,7 @@ function _wclean_remove_worktree
             printf "Removed worktree: %s\n" $worktree_name
 
             # Remove the associated local branch unless --no-delete-branch is specified
-            if test -n "$current_branch_name"; and not set -q _flag_no_delete_branch
+            if test -n "$current_branch_name"; and not set -q _wclean_flag_no_delete_branch
                 _wclean_remove_branch "$current_branch_name"
             else if test -n "$current_branch_name"
                 printf "  Keeping local branch '%s' as requested.\n" $current_branch_name
@@ -575,7 +623,7 @@ function _wclean_show_summary
 
     printf "\nSummary:\n"
     printf "  Processed: %d worktrees\n" $processed_count
-    if set -q _flag_dry_run
+    if set -q _wclean_flag_dry_run
         printf "  Would remove: %d worktrees\n" $removed_count
     else
         printf "  Removed: %d worktrees\n" $removed_count
@@ -594,15 +642,16 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #
     # DESCRIPTION
     #   This command scans a directory containing git worktrees and removes any worktrees
-    #   whose current HEAD commit has been merged into the upstream branch (typically
-    #   origin/main). This helps keep your worktree directory clean by automatically
-    #   removing branches that have been merged.
+    #   whose current HEAD commit has been merged into the upstream project's default
+    #   branch (origin/HEAD, e.g. origin/main or origin/master). This helps keep your
+    #   worktree directory clean by automatically removing branches that have been merged.
     #
     #   The command will:
     #   1. Scan each worktree in the specified directory
-    #   2. Determine the upstream branch (falls back to origin/main if not set)
+    #   2. Determine the integration branch from origin/HEAD (errors if it is unset,
+    #      unless overridden via _wclean_config_default_upstream)
     #   3. Fetch the latest changes from the remote
-    #   4. Check if the current HEAD commit exists in the upstream branch
+    #   4. Check if the current HEAD commit is merged into the integration branch
     #   5. Remove worktrees only if their commits have been merged
     #
     # OPTIONS
@@ -637,7 +686,8 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   # Protected branch names (space-separated)
     #   set -g _wclean_config_protected_branches main master develop staging trunk
     #
-    #   # Default upstream branch when none is configured
+    #   # Override the integration branch (default: auto-detect from origin/HEAD).
+    #   # Only set this if origin/HEAD cannot be used.
     #   set -g _wclean_config_default_upstream origin/main
     #
     #   # System directories to protect (space-separated)
@@ -677,8 +727,11 @@ function git-wclean --description "Clean up git worktrees that have been merged 
         return 1
     end
 
-    # Fetch remote updates
-    _wclean_fetch_remotes
+    # Fetch remote updates and determine the integration branch
+    if not _wclean_fetch_remotes
+        _wclean_normal_cleanup
+        return 2
+    end
 
     # Track statistics
     set -l processed_count 0

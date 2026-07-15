@@ -7,14 +7,16 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #
     # DESCRIPTION
     #   This command removes a git worktree after verifying that its current HEAD commit
-    #   has been merged into the upstream branch (typically origin/main). This provides
-    #   a safe way to remove worktrees without losing any unmerged work.
+    #   has been merged into the upstream project's default branch (origin/HEAD, e.g.
+    #   origin/main or origin/master). This provides a safe way to remove worktrees
+    #   without losing any unmerged work.
     #
     #   The command will:
     #   1. Verify the worktree exists and is a valid git repository
-    #   2. Determine the upstream branch (falls back to origin/main if not set)
+    #   2. Determine the integration branch from origin/HEAD (errors if it is unset;
+    #      run 'git remote set-head origin --auto' to set it)
     #   3. Fetch the latest changes from the remote
-    #   4. Check if the current HEAD commit exists in the upstream branch
+    #   4. Check if the current HEAD commit is merged into the integration branch
     #   5. Remove the worktree only if the commit has been merged
     #
     # OPTIONS
@@ -170,33 +172,48 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         return 1
     end
 
-    # Determine the upstream branch
-    set -l upstream_branch (git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
-    if test $status -ne 0
-        printf "  No upstream branch configured, using origin/main as default.\n"
-        set upstream_branch origin/main
-    else
-        printf "  Upstream branch: %s\n" $upstream_branch
+    # Determine the integration branch to verify against: the upstream
+    # project's default branch (origin/HEAD, e.g. origin/main or origin/master).
+    # This is deliberately NOT the worktree branch's own remote-tracking branch
+    # (@{upstream}) — a feature branch pushed to origin/<feature> would always
+    # "match" itself and defeat the merge check.
+    #
+    # Require origin/HEAD rather than silently assuming origin/main: guessing
+    # the wrong branch would make the merge check meaningless and risk deleting
+    # unmerged work.
+    set -l upstream_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | string replace 'refs/remotes/' '')
+    if test -z "$upstream_branch"
+        printf "Error: Cannot determine the default branch — 'origin/HEAD' is not set.\n" >&2
+        printf "Set it (and retry) with:\n" >&2
+        printf "    git remote set-head origin --auto\n" >&2
+        popd >/dev/null
+        return 2
     end
+    printf "  Integration branch: %s\n" $upstream_branch
 
-    # Extract remote name from upstream branch
+    # Extract remote name from the integration branch
     set -l remote_name (string split '/' $upstream_branch)[1]
     set -l branch_name (string join '/' (string split '/' $upstream_branch)[2..-1])
 
-    # Fetch latest from the remote
+    # Fetch latest from the remote so the merge check uses up-to-date refs
     printf "  Fetching latest from %s...\n" $remote_name
     if not git fetch $remote_name $branch_name >/dev/null 2>&1
         printf "  Warning: Failed to fetch from %s. Proceeding with local information.\n" $remote_name
     end
 
-    # Check if the commit exists in the upstream branch
+    # Check whether HEAD is already contained in the integration branch.
+    # rev-list lists commits reachable from HEAD but not from the integration
+    # branch; empty output means HEAD is fully merged. A rev-list error must
+    # NOT be treated as "merged", or the safety check becomes a no-op.
     set -l commit_found false
-    set -l branch_commits (git rev-list $head_commit --not $upstream_branch ^-1 2>/dev/null)
-    if test -z "$branch_commits"
+    set -l branch_commits (git rev-list $head_commit --not $upstream_branch 2>/dev/null)
+    if test $status -ne 0
+        printf "  ✗ Failed to check merge status against %s.\n" $upstream_branch >&2
+    else if test -z "$branch_commits"
         set commit_found true
-        printf "  ✓ Commit found in upstream branch %s.\n" $upstream_branch
+        printf "  ✓ Commit is merged into %s.\n" $upstream_branch
     else
-        printf "  ✗ Commit NOT found in upstream branch %s.\n" $upstream_branch
+        printf "  ✗ Commit NOT merged into %s.\n" $upstream_branch
     end
 
     popd >/dev/null

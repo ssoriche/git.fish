@@ -251,6 +251,180 @@ function test_git_wrm_validation --description "Test git-wrm input validation an
     return $failed_tests
 end
 
+function test_git_wrm_merge_check --description "Test git-wrm only removes worktrees merged into the default branch"
+    # Use environment variable or fall back to relative path
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wrm merge verification..."
+
+    if not test -f "$test_functions_dir/git-wrm.fish"
+        echo "❌ git-wrm.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/git-wrm.fish
+
+    # Build a bare "remote" with a main branch
+    set -l remote_dir /tmp/git-fish-wrm-remote-(random).git
+    set -l main_dir /tmp/git-fish-wrm-main-(random)
+    rm -rf "$remote_dir" "$main_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    echo "# Test" > "$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+
+    # Create a feature worktree with a commit pushed to its OWN remote branch
+    # (origin/feature) but never merged into origin/main. This is the exact
+    # scenario that the @{upstream} bug mishandled.
+    set -l feature_wt /tmp/git-fish-wrm-feature-(random)
+    rm -rf "$feature_wt"
+    git -C "$main_dir" worktree add -b feature "$feature_wt" >/dev/null 2>&1
+    echo "feature work" > "$feature_wt/feature.txt"
+    git -C "$feature_wt" add feature.txt
+    git -C "$feature_wt" commit -m "Unmerged feature work" >/dev/null 2>&1
+    git -C "$feature_wt" push -u origin feature >/dev/null 2>&1
+
+    # Test 1: refuses to remove a worktree not merged into origin/main
+    echo "Test 1: git-wrm refuses unmerged worktree..."
+    set total_tests (math $total_tests + 1)
+    git-wrm "$feature_wt" >/dev/null 2>&1
+    set -l rm_status $status
+    if test $rm_status -eq 3; and test -d "$feature_wt"
+        echo "✅ git-wrm refused to remove unmerged worktree (exit 3)"
+    else
+        echo "❌ git-wrm should refuse unmerged worktree: exit=$rm_status"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Merge the feature work into origin/main; now it should be removable.
+    git -C "$main_dir" merge --no-ff feature -m "Merge feature" >/dev/null 2>&1
+    git -C "$main_dir" push origin main >/dev/null 2>&1
+
+    # Test 2: dry-run reports it WOULD remove once merged into origin/main
+    echo "Test 2: git-wrm allows merged worktree..."
+    set total_tests (math $total_tests + 1)
+    set -l dry_output (git-wrm --dry-run "$feature_wt" 2>&1)
+    set -l dry_status $status
+    if test $dry_status -eq 0; and string match -q '*Would remove*' "$dry_output"
+        echo "✅ git-wrm recognizes merged worktree (dry-run would remove)"
+    else
+        echo "❌ git-wrm should allow merged worktree: exit=$dry_status"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 3: fails with guidance when origin/HEAD is not set, instead of
+    # silently assuming origin/main (which could delete unmerged work).
+    echo "Test 3: git-wrm errors when origin/HEAD is unset..."
+    set total_tests (math $total_tests + 1)
+    git -C "$main_dir" symbolic-ref --delete refs/remotes/origin/HEAD >/dev/null 2>&1
+    set -l noref_output (git-wrm "$feature_wt" 2>&1)
+    set -l noref_status $status
+    if test $noref_status -eq 2; and test -d "$feature_wt"; and string match -q '*origin/HEAD*' "$noref_output"
+        echo "✅ git-wrm errors with guidance when origin/HEAD is unset (exit 2)"
+    else
+        echo "❌ git-wrm should error when origin/HEAD is unset: exit=$noref_status"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Cleanup
+    git -C "$main_dir" worktree remove --force "$feature_wt" >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$feature_wt"
+
+    echo "📊 git-wrm merge check results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
+function test_git_wclean_dry_run --description "Test git-wclean honors --dry-run and removes merged worktrees"
+    # Use environment variable or fall back to relative path
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wclean --dry-run safety..."
+
+    if not test -f "$test_functions_dir/git-wclean.fish"
+        echo "❌ git-wclean.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/git-wclean.fish
+
+    # Build a bare "remote" with a main branch and a worktrees directory
+    set -l remote_dir /tmp/git-fish-wclean-remote-(random).git
+    set -l main_dir /tmp/git-fish-wclean-main-(random)
+    set -l wts_dir /tmp/git-fish-wclean-wts-(random)
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    echo "# Test" > "$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+
+    # A merged worktree: a new branch pointing at main's HEAD (contained in
+    # origin/main), so it is eligible for removal.
+    mkdir -p "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/merged" -b merged-copy >/dev/null 2>&1
+
+    # git-wclean detects the remote/default branch from the current repo, so
+    # run it from inside the repo (as documented usage implies).
+    set -l orig_dir (pwd)
+    cd "$main_dir"
+
+    # Test 1: --dry-run must NOT delete the worktree
+    echo "Test 1: git-wclean --dry-run keeps worktrees..."
+    set total_tests (math $total_tests + 1)
+    set -l dry_output (git-wclean --dry-run "$wts_dir" 2>&1)
+    if test -d "$wts_dir/merged"; and string match -q '*Would remove*' "$dry_output"
+        echo "✅ git-wclean --dry-run left the worktree in place"
+    else
+        echo "❌ git-wclean --dry-run should not delete the worktree"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 2: a real run removes the merged worktree
+    echo "Test 2: git-wclean removes merged worktree..."
+    set total_tests (math $total_tests + 1)
+    git-wclean "$wts_dir" >/dev/null 2>&1
+    if not test -d "$wts_dir/merged"
+        echo "✅ git-wclean removed the merged worktree"
+    else
+        echo "❌ git-wclean should have removed the merged worktree"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Cleanup
+    cd "$orig_dir"
+    git -C "$main_dir" worktree prune >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+
+    echo "📊 git-wclean dry-run results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -268,6 +442,16 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wrm_validation
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wrm_merge_check
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_dry_run
     set total_failed (math $total_failed + $status)
 
     echo ""
