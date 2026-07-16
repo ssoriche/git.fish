@@ -195,10 +195,26 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     set -l remote_name (string split '/' $upstream_branch)[1]
     set -l branch_name (string join '/' (string split '/' $upstream_branch)[2..-1])
 
-    # Fetch latest from the remote so the merge check uses up-to-date refs
+    # Fetch latest from the remote so the merge check uses up-to-date refs.
+    # Guard against a slow, unreachable, or interactive remote with a timeout
+    # utility when available (`timeout` on Linux, `gtimeout` from GNU coreutils
+    # on macOS); otherwise fetch without a guard rather than failing.
+    set -l fetch_timeout 30
+    set -l timeout_cmd
+    if command -q timeout
+        set timeout_cmd timeout
+    else if command -q gtimeout
+        set timeout_cmd gtimeout
+    end
     printf "  Fetching latest from %s...\n" $remote_name
-    if not git fetch $remote_name $branch_name >/dev/null 2>&1
-        printf "  Warning: Failed to fetch from %s. Proceeding with local information.\n" $remote_name
+    if test -n "$timeout_cmd"
+        if not $timeout_cmd $fetch_timeout git fetch $remote_name $branch_name >/dev/null 2>&1
+            printf "  Warning: Failed to fetch from %s. Proceeding with local information.\n" $remote_name
+        end
+    else
+        if not git fetch $remote_name $branch_name >/dev/null 2>&1
+            printf "  Warning: Failed to fetch from %s. Proceeding with local information.\n" $remote_name
+        end
     end
 
     # Check whether HEAD is already contained in the integration branch.
