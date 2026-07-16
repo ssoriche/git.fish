@@ -478,11 +478,14 @@ function _wclean_remove_worktree
 
     if set -q _wclean_flag_dry_run
         printf "Would remove worktree: %s\n" $worktree_name
-        # Show branch deletion info
-        if test -n "$current_branch_name"; and not set -q _wclean_flag_no_delete_branch
-            printf "  Would also delete local branch: %s\n" $current_branch_name
-        else if set -q _wclean_flag_no_delete_branch
-            printf "  Would keep local branch: %s\n" $current_branch_name
+        # Show branch deletion info (only when the worktree has a branch, i.e.
+        # not a detached HEAD).
+        if test -n "$current_branch_name"
+            if not set -q _wclean_flag_no_delete_branch
+                printf "  Would also delete local branch: %s\n" $current_branch_name
+            else
+                printf "  Would keep local branch: %s\n" $current_branch_name
+            end
         end
     else
         if git worktree remove --force "$worktree_name" >/dev/null 2>&1
