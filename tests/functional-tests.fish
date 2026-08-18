@@ -482,6 +482,55 @@ function test_git_wclean_dry_run --description "Test git-wclean honors --dry-run
     return $failed_tests
 end
 
+function test_git_wclean_help --description "Test git-wclean --help exits 0 and does not leak body comments"
+    # Use environment variable or fall back to relative path
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wclean --help..."
+
+    if not test -f "$test_functions_dir/git-wclean.fish"
+        echo "❌ git-wclean.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/git-wclean.fish
+
+    set -l help_output (git-wclean --help 2>&1)
+    set -l help_status $status
+
+    # Test 1: --help must exit 0, not fall through into normal execution
+    echo "Test 1: git-wclean --help exits 0..."
+    set total_tests (math $total_tests + 1)
+    if test $help_status -eq 0
+        echo "✅ git-wclean --help exited 0"
+    else
+        echo "❌ git-wclean --help exited $help_status, expected 0"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 2: --help must not leak internal implementation comments from the
+    # function body (only the leading doc block should be emitted).
+    echo "Test 2: git-wclean --help does not leak body comments..."
+    set total_tests (math $total_tests + 1)
+    if string match -q '*Clean up before exit*' -- "$help_output"
+        echo "❌ git-wclean --help leaked an internal body comment"
+        set failed_tests (math $failed_tests + 1)
+    else
+        echo "✅ git-wclean --help did not leak internal body comments"
+    end
+
+    echo "📊 git-wclean help results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function test_git_bare_container_helper --description "Test the _git_bare_container layout-detection helper"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
@@ -1223,6 +1272,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_dry_run
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_help
     set total_failed (math $total_failed + $status)
 
     echo ""

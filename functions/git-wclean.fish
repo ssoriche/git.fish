@@ -18,6 +18,7 @@ function _wclean_cleanup_handler
     set -e _wclean_original_dir
 
     # Clean up promoted argparse flags
+    set -e _wclean_flag_help
     set -e _wclean_flag_dry_run
     set -e _wclean_flag_force
     set -e _wclean_flag_no_delete_branch
@@ -61,6 +62,7 @@ function _wclean_normal_cleanup
     set -e _wclean_original_dir
 
     # Clean up promoted argparse flags
+    set -e _wclean_flag_help
     set -e _wclean_flag_dry_run
     set -e _wclean_flag_force
     set -e _wclean_flag_no_delete_branch
@@ -140,9 +142,14 @@ function _wclean_parse_args
     argparse --name=git-wclean h/help n/dry-run f/force no-delete-branch -- $argv
     or return 1
 
-    # Show help if requested
+    # Show help if requested. argparse populates _flag_help only in this
+    # function's local scope, so promote it to a global (cleaned up in the
+    # cleanup handlers) so the caller in git-wclean can detect it and stop
+    # cleanly instead of falling through into directory setup.
+    set -e _wclean_flag_help
     if set -q _flag_help
         _wclean_show_help
+        set -g _wclean_flag_help
         return 0
     end
 
@@ -188,7 +195,30 @@ end
 function _wclean_show_help
     printf '%s\n' (status function | head -n 1)
     printf '\n'
-    string match -rg '^\s*#\s*(.*)' (functions git-wclean)
+
+    # Only emit the contiguous leading doc-comment block (the function's own
+    # docstring). `functions git-wclean` prefixes its output with a
+    # "# Defined in ... @ line N" header and the `function git-wclean ...`
+    # declaration line before the docstring, so skip past those first, then
+    # stop at the first non-comment line so implementation comments later in
+    # the function body do not leak into user-facing help.
+    set -l body (functions git-wclean)
+    set -l doc_lines
+    set -l past_declaration 0
+    for line in $body
+        if test $past_declaration -eq 0
+            if string match -qr '^function\s' -- $line
+                set past_declaration 1
+            end
+            continue
+        end
+        if string match -qr '^\s*#' -- $line
+            set -a doc_lines $line
+        else
+            break
+        end
+    end
+    string match -rg '^\s*#\s*(.*)' -- $doc_lines
 end
 
 # Helper function to validate and setup the worktrees directory
@@ -761,6 +791,16 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     # Parse and validate arguments
     if not _wclean_parse_args $argv
         return 1
+    end
+
+    # --help is handled inside _wclean_parse_args (prints help, returns 0),
+    # but argparse's _flag_help is local to that function's scope, so it
+    # promotes _wclean_flag_help to a global (see the other _wclean_flag_*
+    # promotions below) so we can detect it here and stop cleanly instead
+    # of falling through into directory setup.
+    if set -q _wclean_flag_help
+        _wclean_normal_cleanup
+        return 0
     end
 
     # Setup and validate directory
