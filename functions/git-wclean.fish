@@ -155,6 +155,7 @@ function _wclean_parse_args
     if test (count $argv) -eq 0
         printf "Error: Missing required argument <worktrees-directory>\n" >&2
         printf "Usage: git-wclean [OPTIONS] <worktrees-directory>\n" >&2
+        printf "(No argument needed inside a canonical .bare layout.)\n" >&2
         printf "Try 'git-wclean --help' for more information.\n" >&2
         return 1
     end
@@ -649,7 +650,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #
     # SYNOPSIS
     #   git-wclean [OPTIONS] <worktrees-directory>
+    #   git-wclean [OPTIONS]
     #   git wclean [OPTIONS] <worktrees-directory>
+    #   git wclean [OPTIONS]
     #
     # DESCRIPTION
     #   This command scans a directory containing git worktrees and removes any worktrees
@@ -672,7 +675,10 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   -h, --help           Show this help message
     #
     # ARGUMENTS
-    #   worktrees-directory    Path to the directory containing git worktrees
+    #   worktrees-directory    Path to the directory containing git worktrees. Optional in a
+    #                          canonical .bare layout (a directory with a sibling .bare/
+    #                          directory), where it defaults to that layout's container
+    #                          directory. Required otherwise.
     #
     # EXAMPLES
     #   # Clean up worktrees in ~/git/myproject-worktrees
@@ -686,6 +692,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #
     #   # Can also be called as git subcommand
     #   git wclean ~/git/myproject-worktrees
+    #
+    #   # In a canonical .bare layout, no path is needed; defaults to the container directory
+    #   git wclean --dry-run
     #
     # CONFIGURATION
     #   Configuration files are loaded from (in order):
