@@ -1083,6 +1083,111 @@ function test_git_wclean_bare_layout_default --description "git-wclean defaults 
     return $failed
 end
 
+function test_git_wclean_path_validation --description "Regression tests for git-wclean path-traversal and system-dir guards"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed 0
+    set -l total 0
+
+    echo "🔍 Testing git-wclean path validation..."
+
+    if not test -f "$test_functions_dir/git-wclean.fish"
+        echo "❌ git-wclean.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/git-wclean.fish
+
+    # _wclean_validate_path reads this config global directly; set it so the
+    # helper can be exercised without going through _wclean_load_config.
+    set -g _wclean_config_max_path_length 4096
+
+    # Test 1: a bare '..' must be rejected. The old pattern '*/..*' required a
+    # '/' before the '..', so a standalone '..' slipped through validation.
+    echo "Test 1: bare '..' rejected..."
+    set total (math $total + 1)
+    if not _wclean_validate_path ".." "test path" >/dev/null 2>&1
+        echo "  ✅ bare '..' correctly rejected"
+    else
+        echo "  ❌ bare '..' should have been rejected"
+        set failed (math $failed + 1)
+    end
+
+    # Test 2: a leading '../sibling' must be rejected -- same root cause as
+    # Test 1: there's no leading '/' before the '..' component.
+    echo "Test 2: '../sibling' rejected..."
+    set total (math $total + 1)
+    if not _wclean_validate_path "../sibling" "test path" >/dev/null 2>&1
+        echo "  ✅ '../sibling' correctly rejected"
+    else
+        echo "  ❌ '../sibling' should have been rejected"
+        set failed (math $failed + 1)
+    end
+
+    # Test 3: a legitimate path component that merely contains '..' as part of
+    # a longer name must still be accepted. Guards against an overzealous fix
+    # that rejects valid directory names like 'foo..bar'.
+    echo "Test 3: 'foo..bar' still accepted..."
+    set total (math $total + 1)
+    if _wclean_validate_path "foo..bar" "test path" >/dev/null 2>&1
+        echo "  ✅ 'foo..bar' correctly accepted"
+    else
+        echo "  ❌ 'foo..bar' should have been accepted (legitimate name, not traversal)"
+        set failed (math $failed + 1)
+    end
+
+    # Test 4: an exact protected system directory (not just its descendants)
+    # must be rejected by _wclean_setup_directory. We point the protected-dirs
+    # config at a throwaway temp directory rather than a real system directory
+    # like /etc, so this never touches a real protected path -- only the guard
+    # logic that reuses the same code path. The config value is given a
+    # trailing slash and is NOT itself pre-resolved through realpath, to also
+    # exercise the non-canonical-config-value normalization the fix adds.
+    echo "Test 4: exact protected directory rejected..."
+    set total (math $total + 1)
+    set -l fake_system_dir /tmp/git-fish-wclean-sysdir-(random)
+    mkdir -p "$fake_system_dir"
+    set -l fake_system_dir_real (realpath "$fake_system_dir")
+    set -g _wclean_config_system_dirs "$fake_system_dir_real/"
+    set -g _wclean_worktrees_dir "$fake_system_dir"
+    set -l setup_err (_wclean_setup_directory 2>&1)
+    set -l setup_rc $status
+    if test $setup_rc -ne 0; and string match -q "*Operation not allowed on system directory*" -- "$setup_err"
+        echo "  ✅ exact protected directory correctly rejected"
+    else
+        echo "  ❌ exact protected directory should have been rejected (rc=$setup_rc): '$setup_err'"
+        set failed (math $failed + 1)
+    end
+
+    # Test 5: a descendant of a protected directory must still be rejected --
+    # the pre-existing behavior the fix must not regress.
+    echo "Test 5: descendant of protected directory still rejected..."
+    set total (math $total + 1)
+    set -l fake_system_subdir "$fake_system_dir_real/child"
+    mkdir -p "$fake_system_subdir"
+    set -g _wclean_worktrees_dir "$fake_system_subdir"
+    set -l setup_err2 (_wclean_setup_directory 2>&1)
+    set -l setup_rc2 $status
+    if test $setup_rc2 -ne 0; and string match -q "*Operation not allowed on system directory*" -- "$setup_err2"
+        echo "  ✅ descendant of protected directory correctly rejected"
+    else
+        echo "  ❌ descendant of protected directory should have been rejected (rc=$setup_rc2): '$setup_err2'"
+        set failed (math $failed + 1)
+    end
+
+    set -e _wclean_config_system_dirs
+    set -e _wclean_worktrees_dir
+    rm -rf "$fake_system_dir"
+
+    echo "📊 git-wclean path validation: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -1165,6 +1270,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_bare_layout_default
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_path_validation
     set total_failed (math $total_failed + $status)
 
     echo ""
