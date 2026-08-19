@@ -844,7 +844,7 @@ function test_git_wadd_bare_layout_rejects_slash --description "git-wadd rejects
     return $failed
 end
 
-function test_git_wadd_bare_layout_rejects_dotdot --description "git-wadd rejects '..' as a worktree name in bare layout"
+function test_git_wadd_bare_layout_rejects_invalid_names --description "git-wadd rejects invalid worktree names in bare layout"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
         set -l test_file_dir (dirname (status --current-filename))
@@ -854,7 +854,7 @@ function test_git_wadd_bare_layout_rejects_dotdot --description "git-wadd reject
         end
     end
 
-    echo "🔍 Testing git-wadd '..' rejection in bare layout..."
+    echo "🔍 Testing git-wadd invalid-name rejection in bare layout..."
 
     set -l fixture (setup_test_bare_layout)
     set -l base $fixture[1]
@@ -864,27 +864,40 @@ function test_git_wadd_bare_layout_rejects_dotdot --description "git-wadd reject
 
     set -p fish_function_path $test_functions_dir
 
-    set total (math $total + 1)
-    cd $container/main
-    set -l err (git-wadd .. 2>&1 >/dev/null)
-    set -l rc $status
-    if test $rc -ne 0; and string match -q '*invalid worktree name*' -- "$err"
-        echo "  ✅ Rejects '..' as a worktree name"
-    else
-        echo "  ❌ Did not reject (rc=$rc, err='$err')"
-        set failed (math $failed + 1)
-    end
+    # Names that _git_bare_worktree_path must reject, paired with a human label for output.
+    # '--' precedes each name below so a leading '-' reaches the name validation instead of
+    # being consumed by git-wadd's own argparse.
+    set -l labels "'.'" "'..'" empty whitespace-only "leading '-'"
+    set -l names . .. "" " " -x
 
-    set total (math $total + 1)
-    if not test -e "$base/.git"
-        echo "  ✅ No worktree created outside the container"
-    else
-        echo "  ❌ A worktree was created outside the container despite the rejection"
-        set failed (math $failed + 1)
+    cd $container/main
+
+    for i in (seq (count $names))
+        set -l name $names[$i]
+        set -l label $labels[$i]
+
+        set total (math $total + 1)
+        set -l err (git-wadd -- $name 2>&1 >/dev/null)
+        set -l rc $status
+        if test $rc -ne 0; and string match -q '*invalid worktree name*' -- "$err"
+            echo "  ✅ Rejects $label worktree name"
+        else
+            echo "  ❌ Did not reject $label (rc=$rc, err='$err')"
+            set failed (math $failed + 1)
+        end
+
+        set total (math $total + 1)
+        set -l entries (ls $container)
+        if test (count $entries) -eq 1; and test "$entries[1]" = main; and not test -e "$base/.git"
+            echo "  ✅ No worktree created ($label)"
+        else
+            echo "  ❌ A worktree was created despite the rejection ($label)"
+            set failed (math $failed + 1)
+        end
     end
 
     cleanup_test_bare_layout $base
-    echo "📊 git-wadd '..' rejection: $total tests, $failed failed"
+    echo "📊 git-wadd invalid-name rejection: $total tests, $failed failed"
     return $failed
 end
 
@@ -1131,7 +1144,7 @@ function run_functional_tests --description "Run all functional tests"
 
     echo ""
 
-    test_git_wadd_bare_layout_rejects_dotdot
+    test_git_wadd_bare_layout_rejects_invalid_names
     set total_failed (math $total_failed + $status)
 
     echo ""
