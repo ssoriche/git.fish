@@ -68,9 +68,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
 
     # Show help if requested
     if set -q _flag_help
-        printf '%s\n' (status function | head -n 1)
-        printf '\n'
-        functions git-wrm | string match -r '^\s*#\s.*' | string replace -r '^\s*#\s?' '' | string replace -r '^\s*#\s*$' ''
+        _git_help_from_doc_comment git-wrm
         return 0
     end
 

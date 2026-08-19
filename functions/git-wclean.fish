@@ -148,7 +148,7 @@ function _wclean_parse_args
     # cleanly instead of falling through into directory setup.
     set -e _wclean_flag_help
     if set -q _flag_help
-        _wclean_show_help
+        _git_help_from_doc_comment git-wclean
         set -g _wclean_flag_help
         return 0
     end
@@ -189,36 +189,6 @@ function _wclean_parse_args
     # Set the global worktrees directory
     set -g _wclean_worktrees_dir $argv[1]
     return 0
-end
-
-# Helper function to show help
-function _wclean_show_help
-    printf '%s\n' (status function | head -n 1)
-    printf '\n'
-
-    # Only emit the contiguous leading doc-comment block (the function's own
-    # docstring). `functions git-wclean` prefixes its output with a
-    # "# Defined in ... @ line N" header and the `function git-wclean ...`
-    # declaration line before the docstring, so skip past those first, then
-    # stop at the first non-comment line so implementation comments later in
-    # the function body do not leak into user-facing help.
-    set -l body (functions git-wclean)
-    set -l doc_lines
-    set -l past_declaration 0
-    for line in $body
-        if test $past_declaration -eq 0
-            if string match -qr '^function\s' -- $line
-                set past_declaration 1
-            end
-            continue
-        end
-        if string match -qr '^\s*#' -- $line
-            set -a doc_lines $line
-        else
-            break
-        end
-    end
-    string match -rg '^\s*#\s*(.*)' -- $doc_lines
 end
 
 # Helper function to validate and setup the worktrees directory
