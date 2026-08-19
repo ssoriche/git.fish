@@ -42,11 +42,7 @@ function git-wclone --description "Clone a repo into a .bare container layout"
     or return 1
 
     if set -q _flag_help
-        printf '%s\n' (status function | head -n 1)
-        printf '\n'
-        functions git-wclone | string match -r '^\s*#\s.*' \
-            | string replace -r '^\s*#\s?' '' \
-            | string replace -r '^\s*#\s*$' ''
+        _git_help_from_doc_comment git-wclone
         return 0
     end
 

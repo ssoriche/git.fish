@@ -59,9 +59,7 @@ function git-wpr --description "Create a git worktree from a GitHub pull request
 
     # Show help if requested
     if set -q _flag_help
-        printf '%s\n' (status function | head -n 1)
-        printf '\n'
-        functions git-wpr | string match -r '^\s*#\s.*' | string replace -r '^\s*#\s?' '' | string replace -r '^\s*#\s*$' ''
+        _git_help_from_doc_comment git-wpr
         return 0
     end
 
