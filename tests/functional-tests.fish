@@ -99,6 +99,11 @@ function test_cwb_function --description "Test the cwb (current working branch) 
 
     echo "🔍 Testing cwb function..."
 
+    # Register the functions dir so autoload can resolve cwb's private
+    # helper dependencies (e.g. _git_help_from_doc_comment) — sourcing
+    # cwb.fish alone does not pull those in.
+    set -p fish_function_path $test_functions_dir
+
     # Check if functions directory exists
     if not test -d "$test_functions_dir"
         echo "❌ Functions directory not found: $test_functions_dir"
@@ -262,6 +267,11 @@ function test_git_wrm_validation --description "Test git-wrm input validation an
     # _git_bare_worktree_path and _git_bare_container autoload correctly.
     set -p fish_function_path $test_functions_dir
     source $test_functions_dir/git-wrm.fish
+
+    # Register the functions dir so autoload can resolve git-wrm's private
+    # helper dependencies (_git_help_from_doc_comment, _git_bare_container) —
+    # sourcing git-wrm.fish alone does not pull those in.
+    set -p fish_function_path $test_functions_dir
 
     # Test 1: Help functionality
     echo "Test 1: git-wrm help..."
@@ -502,6 +512,11 @@ function test_git_wclean_help --description "Test git-wclean --help exits 0 and 
         return 1
     end
     source $test_functions_dir/git-wclean.fish
+
+    # Register the functions dir so autoload can resolve git-wclean's
+    # private helper dependency (_git_help_from_doc_comment) — sourcing
+    # git-wclean.fish alone does not pull it in.
+    set -p fish_function_path $test_functions_dir
 
     set -l help_output (git-wclean --help 2>&1)
     set -l help_status $status
@@ -1245,6 +1260,70 @@ function test_git_wclean_path_validation --description "Regression tests for git
     return $failed
 end
 
+function test_all_commands_help_no_leaked_comments --description "Data-driven check that every command's --help exits 0 and leaks no implementation comments"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed 0
+    set -l total 0
+
+    echo "🔍 Testing --help across all commands for leaked body comments..."
+
+    if not test -d "$test_functions_dir"
+        echo "❌ Functions directory not found: $test_functions_dir"
+        return 1
+    end
+
+    set -p fish_function_path $test_functions_dir
+
+    # Each command paired with a distinctive substring from one of ITS OWN
+    # non-doc implementation comments (i.e. text that only exists in the
+    # function body, never in its documented --help sections). If any of
+    # these show up in --help output, the leading doc-comment block was not
+    # correctly isolated from the rest of the function body.
+    set -l commands cwb git-bclean git-diff-plain git-show-plain git-wadd git-wjump git-wclone git-wpr git-wrm git-wclean
+    set -l leak_markers "Check if we're in a git repository and get branch name" \
+        "Extract remote name from upstream branch" \
+        "Run git diff with pager disabled" \
+        "Run git show with pager disabled" \
+        "Layout-aware path resolution: in a bare layout, the argument is a worktree NAME" \
+        "Check if fzf is available" \
+        "Destination collision checks" \
+        "Validate PR number is numeric" \
+        "Note: Fish shell signal handling is different from bash" \
+        "Clean up before exit"
+
+    for i in (seq (count $commands))
+        set -l cmd $commands[$i]
+        set -l marker $leak_markers[$i]
+
+        set total (math $total + 1)
+        set -l help_output ($cmd --help 2>&1)
+        set -l help_status $status
+
+        if test $help_status -ne 0
+            echo "❌ $cmd --help exited $help_status, expected 0"
+            set failed (math $failed + 1)
+            continue
+        end
+
+        if string match -q "*$marker*" -- "$help_output"
+            echo "❌ $cmd --help leaked implementation comment: '$marker'"
+            set failed (math $failed + 1)
+        else
+            echo "✅ $cmd --help exits 0 and does not leak implementation comments"
+        end
+    end
+
+    echo "📊 --help leak check: $total tests, $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -1337,6 +1416,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_path_validation
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_all_commands_help_no_leaked_comments
     set total_failed (math $total_failed + $status)
 
     echo ""
