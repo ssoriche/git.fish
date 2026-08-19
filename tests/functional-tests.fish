@@ -256,6 +256,9 @@ function test_git_wrm_validation --description "Test git-wrm input validation an
         echo "❌ git-wrm.fish not found in: $test_functions_dir"
         return 1
     end
+    # Put the functions dir on fish_function_path so git-wrm's calls to helpers like
+    # _git_bare_worktree_path and _git_bare_container autoload correctly.
+    set -p fish_function_path $test_functions_dir
     source $test_functions_dir/git-wrm.fish
 
     # Test 1: Help functionality
@@ -317,6 +320,9 @@ function test_git_wrm_merge_check --description "Test git-wrm only removes workt
         echo "❌ git-wrm.fish not found in: $test_functions_dir"
         return 1
     end
+    # Put the functions dir on fish_function_path so git-wrm's calls to helpers like
+    # _git_bare_worktree_path and _git_bare_container autoload correctly.
+    set -p fish_function_path $test_functions_dir
     source $test_functions_dir/git-wrm.fish
 
     # Build a bare "remote" with a main branch
@@ -838,6 +844,50 @@ function test_git_wadd_bare_layout_rejects_slash --description "git-wadd rejects
     return $failed
 end
 
+function test_git_wadd_bare_layout_rejects_dotdot --description "git-wadd rejects '..' as a worktree name in bare layout"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wadd '..' rejection in bare layout..."
+
+    set -l fixture (setup_test_bare_layout)
+    set -l base $fixture[1]
+    set -l container $fixture[2]
+    set -l failed 0
+    set -l total 0
+
+    set -p fish_function_path $test_functions_dir
+
+    set total (math $total + 1)
+    cd $container/main
+    set -l err (git-wadd .. 2>&1 >/dev/null)
+    set -l rc $status
+    if test $rc -ne 0; and string match -q '*invalid worktree name*' -- "$err"
+        echo "  ✅ Rejects '..' as a worktree name"
+    else
+        echo "  ❌ Did not reject (rc=$rc, err='$err')"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    if not test -e "$base/.git"
+        echo "  ✅ No worktree created outside the container"
+    else
+        echo "  ❌ A worktree was created outside the container despite the rejection"
+        set failed (math $failed + 1)
+    end
+
+    cleanup_test_bare_layout $base
+    echo "📊 git-wadd '..' rejection: $total tests, $failed failed"
+    return $failed
+end
+
 function test_git_wadd_non_bare_preserves_path --description "git-wadd in non-bare repo creates worktree relative to cwd"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
@@ -1073,6 +1123,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wadd_bare_layout_rejects_slash
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wadd_bare_layout_rejects_dotdot
     set total_failed (math $total_failed + $status)
 
     echo ""
