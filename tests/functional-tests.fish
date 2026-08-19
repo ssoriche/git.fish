@@ -1049,15 +1049,19 @@ function test_git_wclean_bare_layout_default --description "git-wclean defaults 
     # Invoke wclean with no args while inside the initial worktree.
     # We're testing that the path argument is implicitly defaulted to the container —
     # not the cleanup outcome (which depends on the existing worktree-state logic).
-    # A success signal: wclean does NOT fail with a "missing argument" error.
+    # Assert the real contract: wclean must (a) succeed and (b) actually select the
+    # container directory, not just "not print a missing-argument error". git-wclean
+    # prints "Scanning worktrees in: <resolved-path>", so match against the container's
+    # realpath (setup_test_bare_layout's $container may traverse a symlinked /tmp).
     set total (math $total + 1)
     cd $container/main
+    set -l expected_container (realpath "$container")
     set -l err (git-wclean --dry-run 2>&1)
     set -l rc $status
-    if not string match -q '*Missing*argument*' -- "$err"; and not string match -q '*Usage*' -- "$err"
-        echo "  ✅ wclean accepted no-arg invocation in bare layout"
+    if test $rc -eq 0; and string match -q "*Scanning worktrees in: $expected_container*" -- "$err"
+        echo "  ✅ wclean succeeded and selected the container ($expected_container)"
     else
-        echo "  ❌ wclean rejected no-arg invocation: '$err'"
+        echo "  ❌ wclean did not succeed with the container selected (rc=$rc): '$err'"
         set failed (math $failed + 1)
     end
 
