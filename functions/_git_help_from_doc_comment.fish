@@ -35,5 +35,21 @@ function _git_help_from_doc_comment --description "Print a command's name and it
             break
         end
     end
-    string match -rg '^\s*#\s*(.*)' -- $doc_lines
+
+    # Strip only the comment marker itself: leading whitespace, '#', and at
+    # most ONE following space. Anything past that single space is the
+    # doc-comment's own indentation and must survive so section content
+    # (e.g. "  cwb [OPTIONS]" under "SYNOPSIS") stays visually nested under
+    # its flush-left header. A line that is nothing but '#' (optionally
+    # followed by only whitespace) is a paragraph-break marker and renders
+    # as an empty line rather than a line with a stray leftover space.
+    set -l result
+    for line in $doc_lines
+        if string match -qr '^\s*#\s*$' -- $line
+            set -a result ''
+        else
+            set -a result (string replace -r '^\s*#\s?' '' -- $line)
+        end
+    end
+    printf '%s\n' $result
 end
