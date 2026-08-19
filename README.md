@@ -66,7 +66,7 @@ directory containing:
 `git wrm`, and `git wclean` automatically anchor their operations to the container directory —
 you don't have to `cd` around.
 
-```
+```text
 ~/projects/myrepo/
 ├── .bare/
 ├── .git              ← points at .bare
