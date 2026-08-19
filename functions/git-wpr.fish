@@ -5,6 +5,9 @@ function git-wpr --description "Create a git worktree from a GitHub pull request
     #   git-wpr [OPTIONS] <pr-number> [worktree-name]
     #   git wpr [OPTIONS] <pr-number> [worktree-name]
     #
+    #   In a canonical .bare layout, [worktree-name] is a container-anchored name,
+    #   not a path (see ARGUMENTS for the exact restriction).
+    #
     # DESCRIPTION
     #   This command creates a new git worktree from a GitHub pull request. It fetches
     #   the PR's head branch from the origin remote and creates a worktree for it.
@@ -20,7 +23,12 @@ function git-wpr --description "Create a git worktree from a GitHub pull request
     # ARGUMENTS
     #   pr-number        GitHub PR number (e.g., 123)
     #   worktree-name    Optional name for the worktree directory
-    #                    (default: pr-NUMBER)
+    #                    (default: pr-NUMBER). In a canonical .bare layout (a
+    #                    directory with a sibling .bare/ directory), this is a
+    #                    single name anchored under the container directory, not
+    #                    a path: rejected if empty/whitespace-only, contains '/',
+    #                    is '.' or '..', or starts with '-'. Outside a .bare
+    #                    layout, used as-is (a path).
     #
     # EXAMPLES
     #   # Create worktree from PR number
@@ -34,6 +42,10 @@ function git-wpr --description "Create a git worktree from a GitHub pull request
     #
     #   # Use different remote
     #   git wpr --remote upstream 123
+    #
+    #   # In a .bare layout, worktree-name is a name, not a path: use '-' or '.' as
+    #   # a separator instead of '/'
+    #   git wpr 789 my.feature.branch
     #
     # EXIT STATUS
     #   0    Success

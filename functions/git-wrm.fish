@@ -5,6 +5,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   git-wrm [OPTIONS] <worktree-path>
     #   git wrm [OPTIONS] <worktree-path>
     #
+    #   In a canonical .bare layout, <worktree-path> is interpreted as a container-
+    #   anchored worktree name, not a path (see ARGUMENTS for the exact restriction).
+    #
     # DESCRIPTION
     #   This command removes a git worktree after verifying that its current HEAD commit
     #   has been merged into the upstream project's default branch (origin/HEAD, e.g.
@@ -26,7 +29,12 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   -h, --help           Show this help message
     #
     # ARGUMENTS
-    #   worktree-path    Path to the worktree directory to remove
+    #   worktree-path    Path to the worktree directory to remove. In a canonical .bare
+    #                    layout (a directory with a sibling .bare/ directory), this is
+    #                    instead a single name anchored under the container directory,
+    #                    not a path: rejected if empty/whitespace-only, contains '/',
+    #                    is '.' or '..', or starts with '-'. Outside a .bare layout,
+    #                    used as-is (a path).
     #
     # EXAMPLES
     #   # Remove a worktree after verifying it's merged
@@ -40,6 +48,10 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #
     #   # Remove worktree but keep the local branch
     #   git-wrm --no-delete-branch ~/worktrees/feature-branch
+    #
+    #   # In a .bare layout, <worktree-path> is a name, not a path: pass the
+    #   # worktree's name as it appears alongside .bare/, e.g.
+    #   git-wrm feature-branch
     #
     #   # Can also be called as git subcommand
     #   git wrm ~/worktrees/feature-branch
