@@ -87,8 +87,9 @@ function git-wpr --description "Create a git worktree from a GitHub pull request
     # Layout-aware path resolution (see git-wadd for context)
     set -l worktree_path (_git_bare_worktree_path $worktree_name)
     if test $status -ne 0
-        printf "Error: worktree name '%s' contains '/'. In a bare layout,\n" $worktree_name >&2
-        printf "worktree names cannot contain '/' (try using '.' or '-' as separator).\n" >&2
+        printf "Error: invalid worktree name '%s'.\n" $worktree_name >&2
+        printf "In a bare layout, worktree names cannot contain '/', be '.' or '..', or\n" >&2
+        printf "start with '-' (try using '.' or '-' as an internal separator).\n" >&2
         return 1
     end
 

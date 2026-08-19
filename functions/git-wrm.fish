@@ -79,18 +79,15 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     # Validate and resolve the worktree path
     set -l worktree_arg $argv[1]
 
-    # Layout-aware: in a .bare layout, treat the arg as a worktree NAME
-    set -l _container (_git_bare_container)
-    if test $status -eq 0
-        if string match -q '*/*' -- $worktree_arg
-            printf "Error: worktree name '%s' contains '/'. In a bare layout,\n" $worktree_arg >&2
-            printf "worktree names cannot contain '/' (try using '.' or '-' as separator).\n" >&2
-            return 1
-        end
-        set worktree_arg "$_container/$worktree_arg"
+    # Layout-aware: in a .bare layout, treat the arg as a worktree NAME, anchored to the
+    # container directory via the shared resolver (see _git_bare_worktree_path).
+    set -l worktree_path (_git_bare_worktree_path $worktree_arg)
+    if test $status -ne 0
+        printf "Error: invalid worktree name '%s'.\n" $worktree_arg >&2
+        printf "In a bare layout, worktree names cannot contain '/', be '.' or '..', or\n" >&2
+        printf "start with '-' (try using '.' or '-' as an internal separator).\n" >&2
+        return 1
     end
-
-    set -l worktree_path $worktree_arg
 
     if not test -d "$worktree_path"
         printf "Error: Worktree directory '%s' does not exist.\n" $worktree_path >&2
