@@ -105,8 +105,11 @@ function _wclean_validate_path
         set path_type path
     end
 
-    # Check for path traversal attempts
-    if string match -q '*/..*' "$path"
+    # Check for path traversal attempts. Split on '/' and look for a literal
+    # '..' component so a bare '..', a leading '../sibling', and an embedded
+    # 'a/../b' are all caught -- while a component that merely contains '..'
+    # as part of a longer name (e.g. 'foo..bar') is correctly left alone.
+    if contains -- .. (string split / -- "$path")
         printf "Error: Path traversal detected in %s. '..' not allowed.\n" $path_type >&2
         return 1
     end
@@ -219,9 +222,27 @@ function _wclean_setup_directory
         return 1
     end
 
-    # Security validation: Prevent operations on system directories
+    # Security validation: Prevent operations on system directories.
+    # $_wclean_worktrees_dir was just canonicalized via realpath above (no
+    # trailing slash), but $system_dir comes straight from config and may be
+    # non-canonical (e.g. a trailing slash). Normalize the trailing slash
+    # before comparing so the system directory itself is rejected too, not
+    # just its descendants (a plain "$system_dir/*" glob only ever matched
+    # descendants).
     for system_dir in $_wclean_config_system_dirs
-        if string match -q "$system_dir/*" "$_wclean_worktrees_dir"
+        set -l system_dir_norm (string replace -r '/+$' '' -- $system_dir)
+        if test -z "$system_dir_norm"
+            set system_dir_norm /
+        end
+
+        set -l is_system_dir 0
+        if test "$_wclean_worktrees_dir" = "$system_dir_norm"
+            set is_system_dir 1
+        else if string match -q -- "$system_dir_norm/*" "$_wclean_worktrees_dir"
+            set is_system_dir 1
+        end
+
+        if test $is_system_dir -eq 1
             printf "Error: Operation not allowed on system directory '%s'.\n" $system_dir >&2
             return 1
         end
