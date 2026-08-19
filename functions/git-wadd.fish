@@ -5,6 +5,9 @@ function git-wadd --description "Create a new git worktree and branch"
     #   git-wadd [OPTIONS] <worktree-name> [branch-name] [git-worktree-options...]
     #   git wadd [OPTIONS] <worktree-name> [branch-name] [git-worktree-options...]
     #
+    #   In a canonical .bare layout, <worktree-name> is a container-anchored name,
+    #   not a path (see ARGUMENTS for the exact restriction).
+    #
     # DESCRIPTION
     #   This command creates a new git worktree and optionally creates a new branch for it.
     #   If no branch name is provided, it will create a new branch based on the current
@@ -15,7 +18,12 @@ function git-wadd --description "Create a new git worktree and branch"
     #   -h, --help       Show this help message
     #
     # ARGUMENTS
-    #   worktree-name    Name/path of the new worktree directory
+    #   worktree-name    Name/path of the new worktree directory. In a canonical .bare
+    #                    layout (a directory with a sibling .bare/ directory), this is
+    #                    a single name anchored under the container directory, not a
+    #                    path: rejected if empty/whitespace-only, contains '/', is '.'
+    #                    or '..', or starts with '-'. Outside a .bare layout, used
+    #                    as-is (a path).
     #   branch-name      Name of the branch to create or check out (optional)
     #                   If not provided, creates a branch from upstream
     #   git-worktree-options  Additional options to pass to git worktree add
@@ -29,6 +37,10 @@ function git-wadd --description "Create a new git worktree and branch"
     #
     #   # Create worktree with additional git worktree options
     #   git-wadd feature-456 origin/main --force
+    #
+    #   # In a .bare layout, <worktree-name> is a name, not a path: use '-' or '.' as
+    #   # a separator instead of '/'
+    #   git-wadd feature.123
     #
     #   # Can also be called as git subcommand
     #   git wadd my-feature
