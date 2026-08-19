@@ -17,6 +17,7 @@ function setup_test_repo --description "Setup a test git repository for testing"
     git init -b main >/dev/null 2>&1
     git config user.name "Test User"
     git config user.email "test@example.com"
+    git config commit.gpgsign false
 
     echo "# Test Repository" >README.md
     git add README.md
@@ -51,6 +52,7 @@ function setup_test_bare_layout --description "Setup a .bare container layout fo
     git clone -q "$upstream" "$seed"
     git -C "$seed" config user.name "Test User"
     git -C "$seed" config user.email "test@example.com"
+    git -C "$seed" config commit.gpgsign false
     echo "# Test" >"$seed/README.md"
     git -C "$seed" add README.md
     git -C "$seed" commit -q -m initial
@@ -334,6 +336,7 @@ function test_git_wrm_merge_check --description "Test git-wrm only removes workt
     git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
     git -C "$main_dir" config user.name "Test User"
     git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
     echo "# Test" > "$main_dir/README.md"
     git -C "$main_dir" add README.md
     git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
@@ -431,6 +434,7 @@ function test_git_wclean_dry_run --description "Test git-wclean honors --dry-run
     git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
     git -C "$main_dir" config user.name "Test User"
     git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
     echo "# Test" > "$main_dir/README.md"
     git -C "$main_dir" add README.md
     git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
@@ -569,6 +573,7 @@ function test_git_wclone_happy_path --description "Test git-wclone produces a co
     git clone -q $upstream $seed
     git -C $seed config user.name "Test User"
     git -C $seed config user.email "test@example.com"
+    git -C $seed config commit.gpgsign false
     echo "# Test" >$seed/README.md
     git -C $seed add README.md
     git -C $seed commit -q -m initial
@@ -650,6 +655,7 @@ function test_git_wclone_refuses_collision --description "Test git-wclone refuse
     git clone -q $upstream $seed
     git -C $seed config user.name "Test User"
     git -C $seed config user.email "test@example.com"
+    git -C $seed config commit.gpgsign false
     echo "# Test" >$seed/README.md
     git -C $seed add README.md
     git -C $seed commit -q -m initial
@@ -721,6 +727,7 @@ function test_git_wclone_no_checkout --description "Test git-wclone --no-checkou
     git clone -q $upstream $seed
     git -C $seed config user.name "Test User"
     git -C $seed config user.email "test@example.com"
+    git -C $seed config commit.gpgsign false
     echo "# Test" >$seed/README.md
     git -C $seed add README.md
     git -C $seed commit -q -m initial
@@ -922,6 +929,7 @@ function test_git_wadd_non_bare_preserves_path --description "git-wadd in non-ba
     git clone -q $upstream $seed
     git -C $seed config user.name "Test User"
     git -C $seed config user.email "test@example.com"
+    git -C $seed config commit.gpgsign false
     echo "# Test" >$seed/README.md
     git -C $seed add README.md
     git -C $seed commit -q -m initial
