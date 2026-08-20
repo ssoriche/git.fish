@@ -1,0 +1,199 @@
+# Worktree Cleanup: wlist, wclean smarts, and the --check nudge
+
+**Date:** 2026-08-20
+**Status:** Approved design, pending implementation plan
+
+## Problem
+
+Worktrees accumulate faster than they get cleaned up. `git wclean` today only
+reaps worktrees whose HEAD is an *ancestor* of the integration branch, which
+misses the most common modern case: squash-merged PRs, where the local commits
+never appear in upstream history. The result is a growing pile of dead
+worktrees, and nothing in the workflow reminds the user they exist.
+
+Inspired by the pre-warmed-pool `wt` tool described in
+<https://daveschumaker.net/use-git-worktrees-they-said-itll-be-fun-they-said/>,
+but scoped to this project's actual pain: visibility and reaping, not slow
+worktree creation. The pool concept was considered and deliberately deferred.
+
+## Goals
+
+1. **Visibility** — a dashboard (`git wlist`) showing every worktree's state.
+2. **Smarter reaping** — `git wclean` detects squash-merged work via
+   `[gone]` upstreams and closed GitHub PRs, and flags stale worktrees.
+3. **A nudge** — `git wclean --check` emits a one-line summary suitable for
+   `fish_greeting`/prompt integration, so forgotten worktrees surface
+   themselves.
+
+## Non-goals
+
+- Pre-warmed worktree pools / slot recycling (deferred; separate feature if
+  dependency-install cost ever justifies it).
+- Forgejo/Gitea PR-state API integration. Non-GitHub remotes rely on
+  gone-upstream detection, which fires on any forge once the PR branch is
+  deleted. The forge dispatch point is designed so an API backend can be added
+  later.
+- Auto-removal of stale worktrees. Age alone never justifies deletion.
+- Multi-repo scanning. `--check` covers the current repo/container only.
+
+## Architecture
+
+### Shared classifier: `functions/_git_worktree_status.fish`
+
+A private helper (house pattern: `_git_bare_container.fish`,
+`_git_help_from_doc_comment.fish`) that is the single source of truth for
+"what state is this worktree in". `git-wlist`, `git-wclean`, and
+`git wclean --check` all consume it, so they can never disagree about what is
+reapable.
+
+**Contract:**
+
+```
+_git_worktree_status <worktree-path> <stale-days>
+```
+
+Prints exactly one tab-separated line to stdout and returns 0:
+
+```
+<state>\t<branch>\t<upstream>\t<dirty>\t<age-days>\t<path>
+```
+
+- `branch` is the checked-out branch name, or `-` for detached HEAD.
+- `upstream` is the configured upstream ref, or `-` if none.
+- `dirty` is `clean` or `dirty`, from `git -C <path> status --porcelain`
+  (non-empty output = dirty).
+- `age-days` is whole days since HEAD's committer date.
+
+**States, decided in precedence order (first match wins):**
+
+| State       | Condition                                                                                    |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| `protected` | Branch is in the protected-branches set (main, master, develop + wclean config)               |
+| `detached`  | Worktree is on a detached HEAD                                                                |
+| `merged`    | HEAD is an ancestor of the integration branch (existing wclean ancestry check, relocated)     |
+| `pr-closed` | Remote host is github.com, `gh` is available/authenticated, and `gh pr view <branch> --json state` reports `MERGED` or `CLOSED` |
+| `gone`      | Branch has an upstream configured but its remote-tracking ref no longer exists                |
+| `stale`     | HEAD committer date older than `<stale-days>` days (default 30)                               |
+| `active`    | Everything else                                                                               |
+
+**Fetching:** the classifier performs no fetch. Each consuming command runs
+one `git fetch --prune` (bounded by the existing `fetch_timeout` config) up
+front, then classifies all worktrees against that snapshot — one fetch per
+command run, never per worktree.
+
+**Network in the classifier:** only the `gh` call, only for github.com
+remotes, only when `gh` is installed and authenticated. Any `gh` failure
+(missing, unauthenticated, rate-limited) silently skips the `pr-closed` check
+for that run; affected worktrees fall through to `gone`/`stale`/`active`.
+
+**Safety property:** a failed or timed-out fetch can never make gone-detection
+more aggressive. `gone` requires an upstream to be *configured* while its
+tracking ref is *missing*; only a successful `fetch --prune` removes tracking
+refs, so a network failure cannot fabricate a `gone` state.
+
+## Commands
+
+### `git-wlist` (new)
+
+```
+git wlist [-h|--help] [-s|--stale-days N]
+```
+
+Read-only dashboard. Works anywhere inside a container or plain repo, using
+the same worktree-root discovery as wclean. Runs one `fetch --prune`
+(timeout-bounded), classifies every worktree, prints an aligned table sorted
+reapable-states-first, oldest-first:
+
+```
+NAME          BRANCH        STATE      DIRTY  AGE
+pr-1423       pr-1423       pr-closed  clean  12d
+fix-auth      fix-auth      gone       clean  8d
+big-refactor  big-refactor  stale      dirty  45d
+main          main          protected  clean  0d
+feature-x     feature-x     active     clean  1d
+```
+
+Git's own `locked` and `prunable` worktree annotations are appended to the
+NAME column when present. No porcelain output mode (YAGNI — the classifier's
+line format is already the machine interface if one is ever needed).
+
+Exit status: 0 success, 1 invalid arguments, 2 git failure.
+
+### `git-wclean` (extended)
+
+Per-worktree action is now driven by classifier state:
+
+| State                   | Action                                                                                       |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| `merged`                | Removed with no prompt (existing behavior, unchanged)                                        |
+| `pr-closed`, `gone`     | If clean: single `y/N` prompt per worktree (e.g. `Remove 'fix-auth' (upstream gone)? [y/N]`). `--force` skips the prompt; `--dry-run` lists as "would remove (needs confirm)". If dirty: kept and reported. |
+| `stale`                 | Never removed (even with `--force`); listed in a "stale — review manually" summary section    |
+| `protected`, `detached`, `active`, any dirty | Kept, as today                                                          |
+
+New flag: `--stale-days N` (overrides config). Existing `--dry-run`,
+`--force`, `--no-delete-branch` apply uniformly. New config key in
+`~/.config/git-wclean/config`: `stale_days` (default 30). The summary output
+gains per-category counts.
+
+Refactor boundary: `_wclean_check_merge_status` and the classification parts
+of `_wclean_get_worktree_info` migrate into `_git_worktree_status`. The
+removal machinery, path validation, protected-branch enforcement, system-dir
+protection, and signal handlers are untouched.
+
+### `git wclean --check` (new mode)
+
+The nudge for `fish_greeting`/prompt integration. Fetches (timeout-bounded),
+classifies, and prints **at most one line**, only when something is reapable:
+
+```
+git-wclean: 3 reapable (1 merged, 1 gone, 1 pr-closed), 1 stale — run 'git wclean'
+```
+
+- Silent with exit 0 when nothing is reapable.
+- Always exits 0, including on errors (not a repo, fetch failure): a prompt
+  hook must never break the shell, and a greeting cannot act on errors anyway.
+- A documented fish_greeting one-liner ships in the README.
+
+## Error handling
+
+- **Fetch timeout/failure:** proceed with last-known remote state; warn on
+  stderr (`warning: fetch failed; results may be stale`). `--check` stays
+  silent. Gone-detection cannot be inflated by a failed fetch (see safety
+  property above).
+- **`gh` unavailable:** `pr-closed` silently skipped; gone-detection carries
+  the load.
+- **Detached / locked / prunable worktrees:** surfaced by wlist, never
+  auto-removed.
+- Exit codes follow house style: 0 success, 1 invalid args, 2 git failure
+  (except `--check`, always 0).
+
+## Testing
+
+Extends `tests/functional-tests.fish` using the existing throwaway
+fixture-repo pattern (commit signing disabled):
+
+- **Classifier:** fixture repo + bare "remote"; assert the exact state line
+  for: merged branch; squash-merge simulation (delete remote branch, `fetch
+  --prune` → `gone`); stale via backdated `GIT_COMMITTER_DATE`; dirty tree;
+  detached HEAD; protected branch.
+- **`gh` stub:** a PATH-shim script makes `pr-closed` testable offline,
+  covering `MERGED`, `OPEN`, and gh-absent.
+- **wclean:** gone+clean prompts answered `y` and `n` via stdin; `--force`
+  skips prompts; `--dry-run` removes nothing; stale never removed even with
+  `--force`.
+- **`--check`:** silent + exit 0 when clean; one-line summary when reapable;
+  silent + exit 0 outside a repo.
+- Syntax, `fish_indent`, and `--help` checks pick up new files via existing
+  test globs.
+
+## Decisions log
+
+| Decision                | Choice                                                        |
+| ----------------------- | ------------------------------------------------------------- |
+| Gone-upstream safety    | Reapable when clean, per-worktree y/N confirm                 |
+| Fetch policy            | Every command fetches, bounded by `fetch_timeout`             |
+| Forge dispatch          | By remote host; GitHub via `gh`, others via gone heuristic    |
+| Nudge scope             | Current repo only; user wires greeting/prompt themselves      |
+| Stale policy            | Report-only, default 30 days, configurable                    |
+| Architecture            | Shared `_git_worktree_status` classifier helper               |
+| Pre-warmed pool         | Deferred (not this project's pain)                            |
