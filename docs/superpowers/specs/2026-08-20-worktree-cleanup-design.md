@@ -57,9 +57,21 @@ no config, which keeps it pure and independently testable. Callers resolve
 the integration branch (origin/HEAD, as wclean does today) and load config
 first. To make that possible without duplicating wclean's config loader,
 `_wclean_load_config` is extracted into a shared private helper
-`_git_wclean_config` (same file format, same `~/.config/git-wclean/config`
-path, same `_wclean_config_*` variable names) that both `git-wclean` and
-`git-wlist` call.
+`_git_wclean_config` (same file format, same `_wclean_config_*` variable
+names) that both `git-wclean` and `git-wlist` call. Two deliberate changes
+from today's loader:
+
+1. The existing loader sources **three** paths: `~/.config/git-wclean/config`,
+   `~/.git-wclean-config`, and `./.git-wclean-config`. The shared helper
+   always sources the two user-level paths, but the repo-local
+   `./.git-wclean-config` is honored **only** in an explicit full `git wclean`
+   run (preserving existing behavior there). `git-wlist` and
+   `git wclean --check` never source it — a hook-triggered `--check` sourcing
+   an arbitrary file from whatever checkout the shell starts in would be
+   arbitrary code execution from an untrusted repo.
+2. The loader's `Loading configuration from: …` message moves to stderr, and
+   is suppressed entirely under `--check` (which must print at most one line,
+   on stdout, only when something is reapable).
 
 On success, prints exactly one tab-separated line to stdout and returns 0:
 
@@ -133,18 +145,20 @@ git's `locked`/`prunable` annotations. Consequence (accepted): a registered
 worktree living outside a wclean target directory appears in wlist but is
 untouched by a wclean run over that directory, and an *unregistered* stray
 directory is invisible to wlist. Runs one `fetch --prune` (timeout-bounded),
-classifies every worktree, prints an aligned table sorted
-reapable-states-first, oldest-first:
+classifies every worktree, and prints an aligned table.
 
-NAME is the basename of the worktree path.
+Sort order: by state, in the fixed order `merged`, `pr-closed`, `gone`,
+`stale`, `error`, `detached`, `active`, `protected`; oldest-first within each
+state. NAME is the basename of the worktree path. An `error`-state worktree
+renders with `-` in the BRANCH/DIRTY/AGE columns.
 
 ```
 NAME          BRANCH        STATE      DIRTY  AGE
 pr-1423       pr-1423       pr-closed  clean  12d
 fix-auth      fix-auth      gone       clean  8d
 big-refactor  big-refactor  stale      dirty  45d
-main          main          protected  clean  0d
 feature-x     feature-x     active     clean  1d
+main          main          protected  clean  0d
 ```
 
 Git's own `locked` and `prunable` worktree annotations are appended to the
@@ -172,7 +186,8 @@ protected worktrees classify by the remaining rules (`merged`, `gone`, …) and
 are handled like any other worktree. Without `--force`, the protected list is
 passed and `protected` wins precedence as specified.
 
-New flag: `--stale-days N` (overrides config). Existing `--dry-run`,
+New flag: `-s/--stale-days N` (overrides config; same short/long pair as
+wlist — `-s` is unused in wclean's argparse today). Existing `--dry-run`,
 `--force`, `--no-delete-branch` apply uniformly. New config variable in
 `~/.config/git-wclean/config`, following the existing convention:
 `_wclean_config_stale_days` (default 30), loaded by the shared
@@ -181,8 +196,14 @@ with `fetch_timeout` and protected branches). The summary output gains
 per-category counts.
 
 Refactor boundary: `_wclean_check_merge_status` and the classification parts
-of `_wclean_get_worktree_info` migrate into `_git_worktree_status`, and
-`_wclean_load_config` becomes the shared `_git_wclean_config` helper. The
+of `_wclean_get_worktree_info` migrate into `_git_worktree_status` — note the
+same ancestry check is also *inlined* in `_wclean_process_worktree` (around
+`functions/git-wclean.fish:605`); both copies are replaced by the classifier,
+not just the named helper. `_wclean_load_config` becomes the shared
+`_git_wclean_config` helper. The classifier keys `protected` off the *branch*
+name, while the retained removal-time guard in `_wclean_remove_worktree`
+keys off the worktree *basename*; the two layers are deliberately kept as-is
+(they compose safely) and must not be "unified" into one key. The
 removal machinery, path validation, protected-branch enforcement, system-dir
 protection, and signal handlers are untouched.
 
@@ -195,11 +216,21 @@ plain repos and `.bare` containers alike — exactly the contexts a generic
 greeting hook runs in. It always passes `--no-forge` to the classifier, so no
 `gh` call can ever hang the shell; squash-merged PRs still surface via `gone`
 once the branch is deleted. It fetches (timeout-bounded), classifies, and
-prints **at most one line**, only when something is reapable:
+prints **at most one line**, only when something is reapable.
+
+Fetch guard: the existing fetch code falls back to an *unbounded* fetch when
+neither `timeout` nor `gtimeout` is installed (common on stock macOS). That
+fallback is unacceptable in a prompt hook, so `--check` **skips the fetch
+entirely** when no timeout utility is available and classifies against the
+last-fetched state. Full `git wclean` and `git wlist` keep the existing
+fallback (they're interactive and interruptible).
 
 ```
-git-wclean: 3 reapable (1 merged, 1 gone, 1 pr-closed), 1 stale — run 'git wclean'
+git-wclean: 2 reapable (1 merged, 1 gone), 1 stale — run 'git wclean'
 ```
+
+(Because `--check` always runs `--no-forge`, `pr-closed` can never appear in
+its counts — only `merged` and `gone`.)
 
 - Silent with exit 0 when nothing is reapable — including when stale
   worktrees exist but reapable count is 0. The stale count is appended only
@@ -261,4 +292,6 @@ fixture-repo pattern (commit signing disabled):
 | Enumeration             | wlist/--check via `git worktree list --porcelain`; wclean keeps its directory scan |
 | gh hang risk            | `--check` always classifies with `--no-forge`                 |
 | `--force` vs protected  | Escape hatch preserved: `--force` passes an empty protected list to the classifier |
+| Repo-local config       | `./.git-wclean-config` sourced only by explicit full `git wclean`, never wlist/--check |
+| `--check` fetch guard   | Skips fetch when no `timeout`/`gtimeout` utility exists (never unbounded in a hook) |
 | Pre-warmed pool         | Deferred (not this project's pain)                            |
