@@ -58,20 +58,26 @@ the integration branch (origin/HEAD, as wclean does today) and load config
 first. To make that possible without duplicating wclean's config loader,
 `_wclean_load_config` is extracted into a shared private helper
 `_git_wclean_config` (same file format, same `_wclean_config_*` variable
-names) that both `git-wclean` and `git-wlist` call. Two deliberate changes
-from today's loader:
+names) that both `git-wclean` and `git-wlist` call.
 
-1. The existing loader sources **three** paths: `~/.config/git-wclean/config`,
-   `~/.git-wclean-config`, and `./.git-wclean-config`. The shared helper
-   always sources the two user-level paths, but the repo-local
-   `./.git-wclean-config` is honored **only** in an explicit full `git wclean`
-   run (preserving existing behavior there). `git-wlist` and
-   `git wclean --check` never source it — a hook-triggered `--check` sourcing
-   an arbitrary file from whatever checkout the shell starts in would be
-   arbitrary code execution from an untrusted repo.
+**Helper contract:** `_git_wclean_config [--allow-local] [--quiet]`.
+
+Today's loader tries `~/.config/git-wclean/config`, then
+`~/.git-wclean-config`, then `./.git-wclean-config`, sourcing **only the
+first that exists** (first-match-wins). The shared helper keeps exactly that
+first-match-wins search, with two deliberate changes:
+
+1. The repo-local `./.git-wclean-config` remains the *last-resort fallback*
+   (consulted only when neither user-level file exists), but only when
+   `--allow-local` is passed — which only an explicit full `git wclean` run
+   does, preserving its existing behavior. `git-wlist` and
+   `git wclean --check` omit the flag, so their search stops after the two
+   user-level paths — a hook-triggered `--check` sourcing an arbitrary file
+   from whatever checkout the shell starts in would be arbitrary code
+   execution from an untrusted repo.
 2. The loader's `Loading configuration from: …` message moves to stderr, and
-   is suppressed entirely under `--check` (which must print at most one line,
-   on stdout, only when something is reapable).
+   `--quiet` (always passed by `--check`) suppresses it entirely (`--check`
+   must print at most one line, on stdout, only when something is reapable).
 
 On success, prints exactly one tab-separated line to stdout and returns 0:
 
@@ -100,10 +106,13 @@ On success, prints exactly one tab-separated line to stdout and returns 0:
 **Fetching:** the classifier performs no fetch. Each consuming command runs
 one `git fetch --prune` (bounded by the existing `fetch_timeout` config) up
 front, then classifies all worktrees against that snapshot — one fetch per
-command run, never per worktree. Note this is a deliberate behavior change to
-existing `git-wclean`, which currently fetches *without* `--prune`; the
-`--prune` is what makes gone-detection possible and needs its own test
-coverage.
+command run, never per worktree. The fetch is `git fetch --prune origin`,
+matching the remote today's wclean fetches; worktrees tracking a non-origin
+remote classify against that remote's last-fetched state (their tracking refs
+are never pruned by this fetch, so they cannot newly become `gone` — an
+accepted limitation). Note `--prune` is a deliberate behavior change to
+existing `git-wclean`, which currently fetches without it; the `--prune` is
+what makes gone-detection possible and needs its own test coverage.
 
 **Network in the classifier:** only the `gh` call, only for github.com
 remotes, only when `gh` is installed and authenticated. Any `gh` failure
@@ -173,10 +182,10 @@ Per-worktree action is now driven by classifier state:
 
 | State                   | Action                                                                                       |
 | ----------------------- | -------------------------------------------------------------------------------------------- |
-| `merged`                | Removed with no prompt (existing behavior, unchanged); `--dry-run` lists as "would remove"   |
+| `merged`                | If clean: removed with no prompt; `--dry-run` lists as "would remove". If dirty: kept and reported — a **deliberate behavior change**: today wclean removes merged worktrees even with uncommitted changes (`git worktree remove --force`, unconditional). Dirty now blocks removal in every state; needs its own test. |
 | `pr-closed`, `gone`     | If clean: single `y/N` prompt per worktree (e.g. `Remove 'fix-auth' (upstream gone)? [y/N]`). `--force` skips the prompt; `--dry-run` lists as "would remove (needs confirm)". If dirty: kept and reported. |
 | `stale`                 | Never removed (even with `--force`); listed in a "stale — review manually" summary section    |
-| `protected`, `detached`, `active`, any dirty | Kept, as today                                                          |
+| `protected`, `detached`, `active` | Kept, as today                                                                     |
 
 `--force` and protected branches: today `--force` bypasses protected-branch
 skipping (documented as "Force removal including protected worktrees"), and
@@ -196,10 +205,11 @@ with `fetch_timeout` and protected branches). The summary output gains
 per-category counts.
 
 Refactor boundary: `_wclean_check_merge_status` and the classification parts
-of `_wclean_get_worktree_info` migrate into `_git_worktree_status` — note the
-same ancestry check is also *inlined* in `_wclean_process_worktree` (around
-`functions/git-wclean.fish:605`); both copies are replaced by the classifier,
-not just the named helper. `_wclean_load_config` becomes the shared
+of `_wclean_get_worktree_info` migrate into `_git_worktree_status` — note
+`_wclean_check_merge_status` is currently *dead code* (defined but never
+called; the ancestry check is inlined in `_wclean_process_worktree` around
+`functions/git-wclean.fish:605`), so the plan deletes the named helper and
+replaces the inline copy with the classifier. `_wclean_load_config` becomes the shared
 `_git_wclean_config` helper. The classifier keys `protected` off the *branch*
 name, while the retained removal-time guard in `_wclean_remove_worktree`
 keys off the worktree *basename*; the two layers are deliberately kept as-is
@@ -217,6 +227,12 @@ greeting hook runs in. It always passes `--no-forge` to the classifier, so no
 `gh` call can ever hang the shell; squash-merged PRs still surface via `gone`
 once the branch is deleted. It fetches (timeout-bounded), classifies, and
 prints **at most one line**, only when something is reapable.
+
+Flag combinations: `--check` combined with a directory argument or with
+`--force`/`--dry-run`/`--no-delete-branch`/`--stale-days` is an invocation
+error — exit 1 with a message on stderr. The always-exit-0 rule covers
+*environmental* conditions at runtime (not a repo, fetch failure), not a
+misconfigured hook, which should be visible while the user is setting it up.
 
 Fetch guard: the existing fetch code falls back to an *unbounded* fetch when
 neither `timeout` nor `gtimeout` is installed (common on stock macOS). That
@@ -268,11 +284,14 @@ fixture-repo pattern (commit signing disabled):
   skips prompts; `--dry-run` removes nothing; stale never removed even with
   `--force`; `--force` still removes a merged protected worktree (empty
   protected list passed to classifier) while the default run keeps it; a
-  squash-merged branch survives a fetch *without* `--prune` but classifies
-  `gone` after `fetch --prune`.
+  merged-but-dirty worktree is kept (pinning the deliberate change from
+  today's unconditional removal); a squash-merged branch survives a fetch
+  *without* `--prune` but classifies `gone` after `fetch --prune`.
 - **`--check`:** silent + exit 0 when clean; one-line summary when reapable;
   silent + exit 0 outside a repo; works in a plain repo with no directory
-  argument; never invokes the `gh` stub (verifying `--no-forge`).
+  argument; never invokes the `gh` stub (verifying `--no-forge`); skips the
+  fetch when neither `timeout` nor `gtimeout` is on PATH (stripped-PATH
+  test); flag/argument collisions exit 1.
 - **Classifier failure:** invalid worktree path yields the `error` line,
   return 1, and is never treated as a removal candidate by wclean.
 - Syntax, `fish_indent`, and `--help` checks pick up new files via existing
@@ -294,4 +313,5 @@ fixture-repo pattern (commit signing disabled):
 | `--force` vs protected  | Escape hatch preserved: `--force` passes an empty protected list to the classifier |
 | Repo-local config       | `./.git-wclean-config` sourced only by explicit full `git wclean`, never wlist/--check |
 | `--check` fetch guard   | Skips fetch when no `timeout`/`gtimeout` utility exists (never unbounded in a hook) |
+| Dirty worktrees         | Block removal in every state — deliberate change from today's unconditional merged removal |
 | Pre-warmed pool         | Deferred (not this project's pain)                            |
