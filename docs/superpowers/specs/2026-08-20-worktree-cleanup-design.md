@@ -80,7 +80,7 @@ On success, prints exactly one tab-separated line to stdout and returns 0:
 | `protected` | Branch is in the protected-branches set (defaults: main, master, develop, trunk — matching the existing `_wclean_config_protected_branches` default — plus wclean config) |
 | `detached`  | Worktree is on a detached HEAD                                                                |
 | `merged`    | HEAD is an ancestor of the integration branch (existing wclean ancestry check, relocated)     |
-| `pr-closed` | Remote host is github.com, `gh` is available/authenticated, and `gh pr view <branch> --json state` reports `MERGED` or `CLOSED` |
+| `pr-closed` | The branch's upstream remote (falling back to `origin`) has a github.com URL, `gh` is available/authenticated, and `gh pr view <branch> --json state` — invoked with the worktree as its working directory so `gh` resolves the repo from its remotes — reports `MERGED` or `CLOSED` |
 | `gone`      | Branch has an upstream configured but its remote-tracking ref no longer exists                |
 | `stale`     | HEAD committer date older than `<stale-days>` days (default 30)                               |
 | `active`    | Everything else                                                                               |
@@ -88,7 +88,10 @@ On success, prints exactly one tab-separated line to stdout and returns 0:
 **Fetching:** the classifier performs no fetch. Each consuming command runs
 one `git fetch --prune` (bounded by the existing `fetch_timeout` config) up
 front, then classifies all worktrees against that snapshot — one fetch per
-command run, never per worktree.
+command run, never per worktree. Note this is a deliberate behavior change to
+existing `git-wclean`, which currently fetches *without* `--prune`; the
+`--prune` is what makes gone-detection possible and needs its own test
+coverage.
 
 **Network in the classifier:** only the `gh` call, only for github.com
 remotes, only when `gh` is installed and authenticated. Any `gh` failure
@@ -133,6 +136,8 @@ directory is invisible to wlist. Runs one `fetch --prune` (timeout-bounded),
 classifies every worktree, prints an aligned table sorted
 reapable-states-first, oldest-first:
 
+NAME is the basename of the worktree path.
+
 ```
 NAME          BRANCH        STATE      DIRTY  AGE
 pr-1423       pr-1423       pr-closed  clean  12d
@@ -158,6 +163,14 @@ Per-worktree action is now driven by classifier state:
 | `pr-closed`, `gone`     | If clean: single `y/N` prompt per worktree (e.g. `Remove 'fix-auth' (upstream gone)? [y/N]`). `--force` skips the prompt; `--dry-run` lists as "would remove (needs confirm)". If dirty: kept and reported. |
 | `stale`                 | Never removed (even with `--force`); listed in a "stale — review manually" summary section    |
 | `protected`, `detached`, `active`, any dirty | Kept, as today                                                          |
+
+`--force` and protected branches: today `--force` bypasses protected-branch
+skipping (documented as "Force removal including protected worktrees"), and
+that escape hatch is preserved without duplicating logic: when `--force` is
+set, wclean passes an **empty** protected-branch list to the classifier, so
+protected worktrees classify by the remaining rules (`merged`, `gone`, …) and
+are handled like any other worktree. Without `--force`, the protected list is
+passed and `protected` wins precedence as specified.
 
 New flag: `--stale-days N` (overrides config). Existing `--dry-run`,
 `--force`, `--no-delete-branch` apply uniformly. New config variable in
@@ -188,7 +201,10 @@ prints **at most one line**, only when something is reapable:
 git-wclean: 3 reapable (1 merged, 1 gone, 1 pr-closed), 1 stale — run 'git wclean'
 ```
 
-- Silent with exit 0 when nothing is reapable.
+- Silent with exit 0 when nothing is reapable — including when stale
+  worktrees exist but reapable count is 0. The stale count is appended only
+  when at least one worktree is reapable; stale alone never makes the
+  greeting noisy.
 - Always exits 0, including on errors (not a repo, fetch failure): a prompt
   hook must never break the shell, and a greeting cannot act on errors anyway.
 - A documented fish_greeting one-liner ships in the README.
@@ -219,7 +235,10 @@ fixture-repo pattern (commit signing disabled):
   covering `MERGED`, `OPEN`, and gh-absent.
 - **wclean:** gone+clean prompts answered `y` and `n` via stdin; `--force`
   skips prompts; `--dry-run` removes nothing; stale never removed even with
-  `--force`.
+  `--force`; `--force` still removes a merged protected worktree (empty
+  protected list passed to classifier) while the default run keeps it; a
+  squash-merged branch survives a fetch *without* `--prune` but classifies
+  `gone` after `fetch --prune`.
 - **`--check`:** silent + exit 0 when clean; one-line summary when reapable;
   silent + exit 0 outside a repo; works in a plain repo with no directory
   argument; never invokes the `gh` stub (verifying `--no-forge`).
@@ -241,4 +260,5 @@ fixture-repo pattern (commit signing disabled):
 | Classifier inputs       | Explicit arguments; shared `_git_wclean_config` config loader |
 | Enumeration             | wlist/--check via `git worktree list --porcelain`; wclean keeps its directory scan |
 | gh hang risk            | `--check` always classifies with `--no-forge`                 |
+| `--force` vs protected  | Escape hatch preserved: `--force` passes an empty protected list to the classifier |
 | Pre-warmed pool         | Deferred (not this project's pain)                            |
