@@ -182,8 +182,8 @@ Per-worktree action is now driven by classifier state:
 
 | State                   | Action                                                                                       |
 | ----------------------- | -------------------------------------------------------------------------------------------- |
-| `merged`                | If clean: removed with no prompt; `--dry-run` lists as "would remove". If dirty: kept and reported — a **deliberate behavior change**: today wclean removes merged worktrees even with uncommitted changes (`git worktree remove --force`, unconditional). Dirty now blocks removal in every state; needs its own test. |
-| `pr-closed`, `gone`     | If clean: single `y/N` prompt per worktree (e.g. `Remove 'fix-auth' (upstream gone)? [y/N]`). `--force` skips the prompt; `--dry-run` lists as "would remove (needs confirm)". If dirty: kept and reported. |
+| `merged`                | If clean: removed with no prompt; `--dry-run` lists as "would remove". If dirty: kept and reported — a **deliberate behavior change**: today wclean removes merged worktrees even with uncommitted changes (`git worktree remove --force`, unconditional). Dirty now blocks removal in every state, and `--force` does **not** override the dirty block; both need their own tests. |
+| `pr-closed`, `gone`     | If clean: single `y/N` prompt per worktree — `Remove 'fix-auth' (upstream gone)? [y/N]`, or `(PR merged/closed)` as the parenthetical for `pr-closed`. `--force` skips the prompt; `--dry-run` lists as "would remove (needs confirm)". If dirty: kept and reported. |
 | `stale`                 | Never removed (even with `--force`); listed in a "stale — review manually" summary section    |
 | `protected`, `detached`, `active` | Kept, as today                                                                     |
 
@@ -226,7 +226,10 @@ plain repos and `.bare` containers alike — exactly the contexts a generic
 greeting hook runs in. It always passes `--no-forge` to the classifier, so no
 `gh` call can ever hang the shell; squash-merged PRs still surface via `gone`
 once the branch is deleted. It fetches (timeout-bounded), classifies, and
-prints **at most one line**, only when something is reapable.
+prints **at most one line**, only when something is reapable. "Reapable"
+means state ∈ {`merged`, `gone`} **and** clean — a dirty-merged worktree is
+not counted, since `git wclean` would refuse to touch it and the nudge must
+never disagree with the reaper.
 
 Flag combinations: `--check` combined with a directory argument or with
 `--force`/`--dry-run`/`--no-delete-branch`/`--stale-days` is an invocation
@@ -267,7 +270,7 @@ its counts — only `merged` and `gone`.)
 - **Detached / locked / prunable worktrees:** surfaced by wlist, never
   auto-removed.
 - Exit codes follow house style: 0 success, 1 invalid args, 2 git failure
-  (except `--check`, always 0).
+  (except `--check`, always 0 at runtime; flag misuse still exits 1).
 
 ## Testing
 
@@ -284,9 +287,10 @@ fixture-repo pattern (commit signing disabled):
   skips prompts; `--dry-run` removes nothing; stale never removed even with
   `--force`; `--force` still removes a merged protected worktree (empty
   protected list passed to classifier) while the default run keeps it; a
-  merged-but-dirty worktree is kept (pinning the deliberate change from
-  today's unconditional removal); a squash-merged branch survives a fetch
-  *without* `--prune` but classifies `gone` after `fetch --prune`.
+  merged-but-dirty worktree is kept, including under `--force` (pinning the
+  deliberate change from today's unconditional removal); a squash-merged
+  branch survives a fetch *without* `--prune` but classifies `gone` after
+  `fetch --prune`.
 - **`--check`:** silent + exit 0 when clean; one-line summary when reapable;
   silent + exit 0 outside a repo; works in a plain repo with no directory
   argument; never invokes the `gh` stub (verifying `--no-forge`); skips the
@@ -294,8 +298,13 @@ fixture-repo pattern (commit signing disabled):
   test); flag/argument collisions exit 1.
 - **Classifier failure:** invalid worktree path yields the `error` line,
   return 1, and is never treated as a removal candidate by wclean.
-- Syntax, `fish_indent`, and `--help` checks pick up new files via existing
-  test globs.
+- Syntax and `fish_indent` checks pick up new files via existing test globs,
+  but the `--help` doc-leak check in `tests/functional-tests.fish` is a
+  **hardcoded parallel list** of commands and leak markers — `git-wlist` must
+  be added to both lists explicitly.
+- The wclean doc comment's CONFIGURATION section needs updating for
+  `_wclean_config_stale_days` and the wlist/`--check` config-path
+  restriction.
 
 ## Decisions log
 
