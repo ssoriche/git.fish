@@ -1450,6 +1450,13 @@ function test_git_wclean_check_flags --description "Test --check/--stale-days ar
 
     echo "🔍 Testing git-wclean --check/--stale-days flag validation..."
 
+    # Fake HOME so a real user config (once --check becomes load-bearing in
+    # Task 7) can never print output and break Test 4's silence assertion.
+    set -l fake_home /tmp/git-fish-check-home-(random)
+    mkdir -p "$fake_home"
+    set -l orig_home $HOME
+    set -lx HOME $fake_home
+
     set -p fish_function_path $test_functions_dir
     source $test_functions_dir/git-wclean.fish
 
@@ -1499,6 +1506,9 @@ function test_git_wclean_check_flags --description "Test --check/--stale-days ar
         echo "❌ status=$st output='$out'"
         set failed_tests (math $failed_tests + 1)
     end
+
+    set -lx HOME $orig_home
+    rm -rf "$fake_home"
 
     echo "📊 --check flag results: $failed_tests/$total_tests failed"
     return $failed_tests
