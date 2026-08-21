@@ -427,6 +427,11 @@ All functions automatically detect your git configuration including:
 
 No additional configuration is required.
 
+`git wclean` and `git wlist` optionally read `~/.config/git-wclean/config`
+(protected branches, staleness window, fetch timeout — see `git wclean --help`
+for all keys). The repo-local `./.git-wclean-config` is honored only by
+explicit full `git wclean` runs, never by `git wlist` or `git wclean --check`.
+
 ## Dependencies
 
 - **fish shell** (obviously!)
@@ -437,6 +442,10 @@ Optional tools that enhance the experience:
 
 - **awk** (usually pre-installed)
 - **realpath** (for path resolution)
+- **gh** (GitHub CLI) - enables pr-closed detection for github.com remotes
+- **timeout** / **gtimeout** (GNU coreutils) - bounds fetches, and required
+  for `git wclean --check` to fetch at all (without one, `--check` skips the
+  fetch)
 
 ## Best Practices
 
