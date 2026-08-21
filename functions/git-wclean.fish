@@ -787,10 +787,24 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   4. Check if the current HEAD commit is merged into the integration branch
     #   5. Remove worktrees only if their commits have been merged
     #
+    #   Beyond ancestry-merged worktrees, wclean also detects worktrees whose
+    #   upstream branch was deleted on the remote ('gone', the usual squash-merge
+    #   aftermath) and, for github.com remotes with gh installed, worktrees whose
+    #   PR is merged or closed. Both are removed only after a per-worktree y/N
+    #   confirmation (--force skips the prompt). Worktrees with uncommitted
+    #   changes are never removed, in any state, even with --force. Worktrees
+    #   older than the staleness window are reported for manual review and never
+    #   auto-removed.
+    #
     # OPTIONS
     #   -n, --dry-run        Show what would be removed without actually removing anything
     #   -f, --force          Force removal including protected worktrees (use with caution)
     #   --no-delete-branch   Keep local branches after removing worktrees
+    #   -s, --stale-days N   Staleness window in days (default 30)
+    #   --check              Print a one-line summary of reapable worktrees and
+    #                        exit 0; silent when there is nothing to reap. For
+    #                        fish_greeting/prompt hooks. Cannot be combined with
+    #                        other options or arguments.
     #   -h, --help           Show this help message
     #
     # ARGUMENTS
@@ -816,10 +830,11 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   git wclean --dry-run
     #
     # CONFIGURATION
-    #   Configuration files are loaded from (in order):
+    #   Configuration files are loaded from (first match wins):
     #   1. ~/.config/git-wclean/config
     #   2. ~/.git-wclean-config
-    #   3. ./.git-wclean-config
+    #   3. ./.git-wclean-config   (full runs only; git-wlist and --check never
+    #      source repo-local config)
     #
     #   Example configuration file:
     #   # Protected branch names (space-separated)
@@ -838,6 +853,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   # Fetch timeout in seconds
     #   set -g _wclean_config_fetch_timeout 30
     #
+    #   # Staleness window in days for the 'stale' state
+    #   set -g _wclean_config_stale_days 30
+    #
     # SIGNAL HANDLING
     #   The script handles interruption signals (Ctrl+C, SIGTERM) gracefully:
     #   - Restores original working directory
@@ -849,6 +867,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   1    Invalid arguments or directory not found
     #   2    Git command failed
     #   130  Interrupted by user (Ctrl+C)
+    #
+    #   Under --check, runtime conditions (not a repo, fetch failure) always
+    #   exit 0; only invalid flag combinations exit 1.
 
     # Store original directory for cleanup
     set -g _wclean_original_dir (pwd)

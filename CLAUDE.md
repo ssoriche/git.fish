@@ -62,7 +62,16 @@ source functions/git-wadd.fish
 - `git-wclean`: Bulk cleanup of merged worktrees in a directory
 - `git-wjump`: Interactive worktree selector using fzf
 - `git-wrm`: Remove single worktree after merge verification
+- `git-wlist`: Dashboard of worktree lifecycle states (merged/gone/stale/...)
 - All functions detect upstream branch automatically, falling back to origin/main
+
+**Shared private helpers**
+- `_git_worktree_status`: Single source of truth for classifying a worktree's
+  lifecycle state (merged/gone/pr-closed/stale/active/detached/protected/error);
+  used by both `git-wlist` and `git-wclean`
+- `_git_wclean_config`: Shared config loader for `git-wclean` and `git-wlist`
+  (defaults, `~/.config/git-wclean/config`, `~/.git-wclean-config`, and,
+  for full `git-wclean` runs only, repo-local `./.git-wclean-config`)
 
 **Branch management**
 - `git-bclean`: Clean up merged local branches with pattern exclusion support
