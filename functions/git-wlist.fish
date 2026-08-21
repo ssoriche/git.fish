@@ -69,6 +69,12 @@ function git-wlist --description "List git worktrees with lifecycle state"
     # Shared config; repo-local config is deliberately not honored here
     _git_wclean_config
 
+    if not string match -qr '^\d+$' -- "$_wclean_config_stale_days"
+        printf "warning: invalid _wclean_config_stale_days '%s'; using 30\n" \
+            "$_wclean_config_stale_days" >&2
+        set _wclean_config_stale_days 30
+    end
+
     set -l stale_days $_wclean_config_stale_days
     if set -q _flag_stale_days
         if not string match -qr '^\d+$' -- $_flag_stale_days
@@ -108,7 +114,12 @@ function git-wlist --description "List git worktrees with lifecycle state"
     set -l current_path ""
     set -l current_notes ""
     set -l is_bare 0
-    for line in (git worktree list --porcelain 2>/dev/null)
+    set -l porcelain_output (git worktree list --porcelain 2>/dev/null)
+    if test $status -ne 0
+        printf "Error: failed to list worktrees\n" >&2
+        return 2
+    end
+    for line in $porcelain_output
         if string match -q 'worktree *' -- $line
             if test -n "$current_path"; and test $is_bare -eq 0
                 set -a wt_paths $current_path
