@@ -2060,11 +2060,20 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
 
     echo "Test 2: gone + answer y removes the worktree..."
     set total_tests (math $total_tests + 1)
-    echo y | git-wclean "$wts_dir" >/dev/null 2>&1
+    set -l out (echo y | git-wclean "$wts_dir" 2>&1 | string collect)
     if not test -d "$wts_dir/gone-wt"
         echo "✅ 'y' removed the gone worktree"
     else
         echo "❌ gone worktree should be removed"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2b: summary reports a per-category breakdown..."
+    set total_tests (math $total_tests + 1)
+    if string match -q '*By category:*1 gone*' -- $out
+        echo "✅ summary breakdown includes '1 gone'"
+    else
+        echo "❌ summary breakdown missing: $out"
         set failed_tests (math $failed_tests + 1)
     end
 

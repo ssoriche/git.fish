@@ -22,6 +22,10 @@ function _wclean_cleanup_handler
     set -e _wclean_flag_check
     set -e _wclean_stale_days
     set -e _wclean_stale_report
+    set -e _wclean_count_merged
+    set -e _wclean_count_gone
+    set -e _wclean_count_pr_closed
+    set -e _wclean_count_dirty_kept
 
     # Clean up config variables
     set -e _wclean_config_protected_branches
@@ -67,6 +71,10 @@ function _wclean_normal_cleanup
     set -e _wclean_flag_check
     set -e _wclean_stale_days
     set -e _wclean_stale_report
+    set -e _wclean_count_merged
+    set -e _wclean_count_gone
+    set -e _wclean_count_pr_closed
+    set -e _wclean_count_dirty_kept
 
     # Clean up config variables
     set -e _wclean_config_protected_branches
@@ -496,6 +504,18 @@ function _wclean_remove_branch
     end
 end
 
+# Helper function to bump the per-category summary counter matching a
+# classifier state ('gone' or 'pr-closed'; 'merged' and dirty-kept are
+# incremented inline since they have only one counter each).
+function _wclean_bump_state_count
+    set -l state $argv[1]
+    if test "$state" = gone
+        set -g _wclean_count_gone (math $_wclean_count_gone + 1)
+    else
+        set -g _wclean_count_pr_closed (math $_wclean_count_pr_closed + 1)
+    end
+end
+
 # Helper function to process a single worktree, driven by the shared classifier.
 # Returns 0 when the worktree was removed (or would be, in dry-run), 1 otherwise.
 function _wclean_process_worktree
@@ -530,6 +550,10 @@ function _wclean_process_worktree
 
     set -l line (_git_worktree_status "$worktree_path" "$_wclean_default_branch" \
         $_wclean_stale_days $protected_list)
+    # Guard against an empty classifier line: string split's implicit-stdin
+    # form (no args after --) would otherwise read from stdin and consume a
+    # piped y/n confirmation intended for the read -P prompt below.
+    test -z "$line"; and set line (printf 'error\t-\t-\t-\t-\t%s' "$worktree_path")
     set -l f (string split \t -- $line)
     set -l state $f[1]
     set -l branch $f[2]
@@ -542,6 +566,7 @@ function _wclean_process_worktree
             if test "$dirty" = dirty
                 printf "  ✗ Merged into %s but has uncommitted changes. Keeping worktree.\n" \
                     $_wclean_default_branch
+                set -g _wclean_count_dirty_kept (math $_wclean_count_dirty_kept + 1)
                 return 1
             end
             printf "  ✓ Merged into %s.\n" $_wclean_default_branch
@@ -549,6 +574,7 @@ function _wclean_process_worktree
                 return 1
             end
             if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$branch"
+                set -g _wclean_count_merged (math $_wclean_count_merged + 1)
                 return 0
             end
             return 1
@@ -557,6 +583,7 @@ function _wclean_process_worktree
             test $state = pr-closed; and set reason "PR merged/closed"
             if test "$dirty" = dirty
                 printf "  ✗ %s but has uncommitted changes. Keeping worktree.\n" $reason
+                set -g _wclean_count_dirty_kept (math $_wclean_count_dirty_kept + 1)
                 return 1
             end
             # Printed before the prompt: read -P shows nothing on non-tty
@@ -564,6 +591,7 @@ function _wclean_process_worktree
             printf "  Candidate: %s (%s)\n" $name $reason
             if set -q _wclean_flag_dry_run
                 printf "Would remove worktree: %s (needs confirm: %s)\n" $name $reason
+                _wclean_bump_state_count $state
                 return 0
             end
             if not set -q _wclean_flag_force
@@ -577,6 +605,7 @@ function _wclean_process_worktree
                 return 1
             end
             if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$branch"
+                _wclean_bump_state_count $state
                 return 0
             end
             return 1
@@ -613,6 +642,31 @@ function _wclean_show_summary
     else
         printf "  Removed: %d worktrees\n" $removed_count
     end
+
+    set -l cat_total (math $_wclean_count_merged + $_wclean_count_gone \
+        + $_wclean_count_pr_closed + $_wclean_count_dirty_kept)
+    if test $cat_total -gt 0
+        set -l parts
+        if test $_wclean_count_merged -gt 0
+            set -a parts (printf '%d merged' $_wclean_count_merged)
+        end
+        if test $_wclean_count_gone -gt 0
+            set -a parts (printf '%d gone' $_wclean_count_gone)
+        end
+        if test $_wclean_count_pr_closed -gt 0
+            set -a parts (printf '%d pr-closed' $_wclean_count_pr_closed)
+        end
+        set -l breakdown (string join ', ' $parts)
+        if test $_wclean_count_dirty_kept -gt 0
+            if test -n "$breakdown"
+                set breakdown "$breakdown ($_wclean_count_dirty_kept kept dirty)"
+            else
+                set breakdown "$_wclean_count_dirty_kept kept dirty"
+            end
+        end
+        printf "  By category: %s\n" "$breakdown"
+    end
+
     printf "  Kept/Skipped: %d worktrees\n" $skipped_count
 
     if set -q _wclean_stale_report[1]
@@ -749,9 +803,13 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     set -q _wclean_stale_days
     or set -g _wclean_stale_days $_wclean_config_stale_days
 
-    # Fresh stale report per run: an earlier aborted run in the same shell
-    # may have leaked the global, and set -ga would append across runs
+    # Fresh stale report and per-category counters per run: an earlier
+    # aborted run in the same shell may have leaked these globals
     set -e _wclean_stale_report
+    set -g _wclean_count_merged 0
+    set -g _wclean_count_gone 0
+    set -g _wclean_count_pr_closed 0
+    set -g _wclean_count_dirty_kept 0
 
     # Setup and validate directory
     if not _wclean_setup_directory
