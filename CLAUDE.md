@@ -63,15 +63,21 @@ source functions/git-wadd.fish
 - `git-wjump`: Interactive worktree selector using fzf
 - `git-wrm`: Remove single worktree after merge verification
 - `git-wlist`: Dashboard of worktree lifecycle states (merged/gone/stale/...)
-- All functions detect upstream branch automatically, falling back to origin/main
+- All functions detect the upstream/integration branch automatically from
+  `origin/HEAD` (a `_wclean_config_default_upstream` override wins when set);
+  `git-wrm` fails with guidance when `origin/HEAD` is unset, and `git-wlist`
+  tolerates an empty integration branch by skipping the merged check
 
 **Shared private helpers**
 - `_git_worktree_status`: Single source of truth for classifying a worktree's
   lifecycle state (merged/gone/pr-closed/stale/active/detached/protected/error);
   used by both `git-wlist` and `git-wclean`
-- `_git_wclean_config`: Shared config loader for `git-wclean` and `git-wlist`
+- `_git_wclean_config`: Shared config loader for `git-wclean`, `git-wlist`, and
+  `git wclean --check`
   (defaults, `~/.config/git-wclean/config`, `~/.git-wclean-config`, and,
-  for full `git-wclean` runs only, repo-local `./.git-wclean-config`)
+  for full `git-wclean` runs only, repo-local `./.git-wclean-config`, which is
+  gated behind `--allow-local` because sourcing it executes code from the
+  current directory)
 
 **Branch management**
 - `git-bclean`: Clean up merged local branches with pattern exclusion support

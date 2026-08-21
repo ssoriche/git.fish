@@ -1980,7 +1980,7 @@ In the `git-wclean` leading doc block:
 
 1. DESCRIPTION — after the existing numbered list, add:
 
-```
+```fish
     #   Beyond ancestry-merged worktrees, wclean also detects worktrees whose
     #   upstream branch was deleted on the remote ('gone', the usual squash-merge
     #   aftermath) and, for github.com remotes with gh installed, worktrees whose
@@ -1993,7 +1993,7 @@ In the `git-wclean` leading doc block:
 
 2. OPTIONS — add two lines:
 
-```
+```fish
     #   -s, --stale-days N   Staleness window in days (default 30)
     #   --check              Print a one-line summary of reapable worktrees and
     #                        exit 0; silent when there is nothing to reap. For
@@ -2003,7 +2003,7 @@ In the `git-wclean` leading doc block:
 
 3. CONFIGURATION — update the config-paths list note and add the new key:
 
-```
+```fish
     #   Configuration files are loaded from (first match wins):
     #   1. ~/.config/git-wclean/config
     #   2. ~/.git-wclean-config
@@ -2013,14 +2013,14 @@ In the `git-wclean` leading doc block:
 
 and to the example config block:
 
-```
+```fish
     #   # Staleness window in days for the 'stale' state
     #   set -g _wclean_config_stale_days 30
 ```
 
 4. EXIT STATUS — add:
 
-```
+```fish
     #   Under --check, runtime conditions (not a repo, fetch failure) always
     #   exit 0; only invalid flag combinations exit 1.
 ```
