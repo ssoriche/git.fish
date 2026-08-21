@@ -334,14 +334,14 @@ function _wclean_fetch_remotes
         printf "⚠️  Note: No 'origin' remote found.\n"
     end
 
-    # Determine the integration branch from origin/HEAD. An explicit config
-    # override takes precedence; otherwise require origin/HEAD rather than
-    # silently assuming origin/main, which could delete unmerged work.
-    set -g _wclean_default_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | string replace 'refs/remotes/' '')
-    if test -z "$_wclean_default_branch"
-        if test -n "$_wclean_config_default_upstream"
-            set -g _wclean_default_branch $_wclean_config_default_upstream
-        else
+    # Determine the integration branch. An explicit config override takes
+    # precedence; otherwise require origin/HEAD rather than silently assuming
+    # origin/main, which could delete unmerged work.
+    if test -n "$_wclean_config_default_upstream"
+        set -g _wclean_default_branch $_wclean_config_default_upstream
+    else
+        set -g _wclean_default_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | string replace 'refs/remotes/' '')
+        if test -z "$_wclean_default_branch"
             printf "Error: Cannot determine the default branch — 'origin/HEAD' is not set.\n" >&2
             printf "Set it (and retry) with:\n" >&2
             printf "    git remote set-head origin --auto\n" >&2
@@ -710,10 +710,11 @@ function _wclean_run_check
             git fetch --prune origin >/dev/null 2>&1
     end
 
-    set -l integration_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
-        | string replace 'refs/remotes/' '')
-    if test -z "$integration_branch"; and test -n "$_wclean_config_default_upstream"
-        set integration_branch $_wclean_config_default_upstream
+    # Integration branch: config override wins; otherwise origin/HEAD
+    set -l integration_branch $_wclean_config_default_upstream
+    if test -z "$integration_branch"
+        set integration_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+            | string replace 'refs/remotes/' '')
     end
 
     # Enumerate registered worktrees, skipping the bare repo entry
