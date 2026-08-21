@@ -1627,6 +1627,120 @@ function test_git_worktree_status_classifier --description "Test _git_worktree_s
     return $failed_tests
 end
 
+function test_git_worktree_status_pr_closed --description "Test pr-closed detection via a gh PATH stub and --no-forge"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing _git_worktree_status pr-closed via gh stub..."
+
+    set -p fish_function_path $test_functions_dir
+    if not test -f "$test_functions_dir/_git_worktree_status.fish"
+        echo "❌ _git_worktree_status.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/_git_worktree_status.fish
+
+    # Fixture: one unmerged branch with an upstream that still exists
+    set -l remote_dir /tmp/git-fish-prc-remote-(random).git
+    set -l main_dir /tmp/git-fish-prc-main-(random)
+    set -l wts_dir /tmp/git-fish-prc-wts-(random)
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    mkdir -p "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/pr" -b wts-pr >/dev/null 2>&1
+    echo pr >"$wts_dir/pr/pr.txt"
+    git -C "$wts_dir/pr" add pr.txt
+    git -C "$wts_dir/pr" commit -m "pr work" >/dev/null 2>&1
+    git -C "$wts_dir/pr" push -u origin wts-pr >/dev/null 2>&1
+
+    # Classifier gates the gh call on the remote URL containing github.com.
+    # It never fetches, so rewriting the URL after all pushes is safe.
+    git -C "$main_dir" remote set-url origin https://github.com/example/repo.git
+
+    # gh stub: logs every invocation, answers MERGED
+    set -l stub_dir /tmp/git-fish-prc-bin-(random)
+    mkdir -p "$stub_dir"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\necho MERGED\n' "$stub_dir" >"$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    set -l orig_path $PATH
+    set -lx PATH $stub_dir $PATH
+
+    echo "Test 1: gh says MERGED -> pr-closed..."
+    set total_tests (math $total_tests + 1)
+    set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
+    set -l state (string split \t -- $line)[1]
+    if test "$state" = pr-closed; and test -f "$stub_dir/gh-called.log"
+        echo "✅ pr-closed via gh stub"
+    else
+        echo "❌ got '$state' (stub log exists: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)")"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: --no-forge never invokes gh..."
+    set total_tests (math $total_tests + 1)
+    rm -f "$stub_dir/gh-called.log"
+    set -l line (_git_worktree_status --no-forge "$wts_dir/pr" origin/main 30)
+    set -l state (string split \t -- $line)[1]
+    if test "$state" != pr-closed; and not test -f "$stub_dir/gh-called.log"
+        echo "✅ --no-forge skipped gh (state='$state')"
+    else
+        echo "❌ state='$state', gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 3: gh says OPEN -> falls through (active)..."
+    set total_tests (math $total_tests + 1)
+    printf '#!/bin/sh\necho OPEN\n' >"$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
+    set -l state (string split \t -- $line)[1]
+    if test "$state" = active
+        echo "✅ OPEN PR leaves worktree active"
+    else
+        echo "❌ got '$state', want active"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: non-github remote skips gh entirely..."
+    set total_tests (math $total_tests + 1)
+    git -C "$main_dir" remote set-url origin https://forgejo.example.com/example/repo.git
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\necho MERGED\n' "$stub_dir" >"$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    rm -f "$stub_dir/gh-called.log"
+    set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
+    set -l state (string split \t -- $line)[1]
+    if test "$state" != pr-closed; and not test -f "$stub_dir/gh-called.log"
+        echo "✅ non-github remote never calls gh (state='$state')"
+    else
+        echo "❌ state='$state', gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Cleanup
+    set -lx PATH $orig_path
+    git -C "$main_dir" worktree prune >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir" "$stub_dir"
+
+    echo "📊 pr-closed results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -1729,6 +1843,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_worktree_status_classifier
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_worktree_status_pr_closed
     set total_failed (math $total_failed + $status)
 
     echo ""
