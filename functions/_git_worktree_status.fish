@@ -13,7 +13,9 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     #             (first match wins, in that order), or error (see below)
     #   branch:   checked-out branch, or '-' for detached HEAD
     #   upstream: configured upstream ref, or '-' if none
-    #   dirty:    clean|dirty (any uncommitted changes, untracked included)
+    #   dirty:    clean|dirty (any uncommitted changes, untracked included);
+    #             dirty is also reported when the status check itself fails
+    #             (fail-safe)
     #   age-days: whole days since HEAD's committer date
     #
     #   If the path is not a resolvable worktree, prints
@@ -27,13 +29,18 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     #     states still classify).
     #   - The only network call is 'gh pr view' for github.com remotes,
     #     disabled entirely by --no-forge; any gh failure falls through.
-    argparse no-forge -- $argv
+    argparse --name=_git_worktree_status no-forge -- $argv
     or return 1
 
     set -l worktree_path $argv[1]
     set -l integration_branch $argv[2]
     set -l stale_days $argv[3]
     set -l protected_branches $argv[4..-1]
+
+    if not string match -qr '^\d+$' -- "$stale_days"
+        printf 'error\t-\t-\t-\t-\t%s\n' "$worktree_path"
+        return 1
+    end
 
     if test -z "$worktree_path"; or not test -d "$worktree_path"; or not test -e "$worktree_path/.git"
         printf 'error\t-\t-\t-\t-\t%s\n' "$worktree_path"
@@ -49,10 +56,11 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     # Branch name; empty on detached HEAD
     set -l branch (git -C "$worktree_path" symbolic-ref --short -q HEAD 2>/dev/null)
 
-    # Dirty: any staged, unstaged, or untracked changes
+    # Dirty: any staged, unstaged, or untracked changes. Fail-safe: if the
+    # status check itself fails, report dirty rather than clean.
     set -l dirty clean
     set -l porcelain (git -C "$worktree_path" status --porcelain 2>/dev/null)
-    if test -n "$porcelain"
+    if test $status -ne 0; or test -n "$porcelain"
         set dirty dirty
     end
 

@@ -1607,6 +1607,17 @@ function test_git_worktree_status_classifier --description "Test _git_worktree_s
         set failed_tests (math $failed_tests + 1)
     end
 
+    echo "Test 10: non-numeric stale-days is rejected, exit 1..."
+    set total_tests (math $total_tests + 1)
+    set -l line (_git_worktree_status "$wts_dir/active" origin/main banana)
+    set -l st $status
+    if test $st -eq 1; and string match -q 'error	*' -- $line
+        echo "✅ error line + return 1"
+    else
+        echo "❌ status=$st line='$line'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
     # Cleanup
     functions -e _wts_field
     git -C "$main_dir" worktree prune >/dev/null 2>&1
