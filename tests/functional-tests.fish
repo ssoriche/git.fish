@@ -1286,7 +1286,7 @@ function test_all_commands_help_no_leaked_comments --description "Data-driven ch
     # function body, never in its documented --help sections). If any of
     # these show up in --help output, the leading doc-comment block was not
     # correctly isolated from the rest of the function body.
-    set -l commands cwb git-bclean git-diff-plain git-show-plain git-wadd git-wjump git-wclone git-wpr git-wrm git-wclean
+    set -l commands cwb git-bclean git-diff-plain git-show-plain git-wadd git-wjump git-wclone git-wpr git-wrm git-wclean git-wlist
     set -l leak_markers "Check if we're in a git repository and get branch name" \
         "Extract remote name from upstream branch" \
         "Run git diff with pager disabled" \
@@ -1296,7 +1296,8 @@ function test_all_commands_help_no_leaked_comments --description "Data-driven ch
         "Destination collision checks" \
         "Validate PR number is numeric" \
         "Note: Fish shell signal handling is different from bash" \
-        "Clean up before exit"
+        "Clean up before exit" \
+        "Enumerate registered worktrees"
 
     for i in (seq (count $commands))
         set -l cmd $commands[$i]
@@ -1742,6 +1743,170 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     return $failed_tests
 end
 
+function test_git_wlist --description "Test git-wlist table output, sorting, and flags"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wlist..."
+
+    set -p fish_function_path $test_functions_dir
+    if not test -f "$test_functions_dir/git-wlist.fish"
+        echo "❌ git-wlist.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/git-wlist.fish
+
+    # Fixture: bare remote, main clone, merged + gone + active worktrees
+    set -l remote_dir /tmp/git-fish-wlist-remote-(random).git
+    set -l main_dir /tmp/git-fish-wlist-main-(random)
+    set -l wts_dir /tmp/git-fish-wlist-wts-(random)
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+    mkdir -p "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/wl-merged" -b wl-merged >/dev/null 2>&1
+    git -C "$main_dir" worktree add "$wts_dir/wl-gone" -b wl-gone >/dev/null 2>&1
+    echo g >"$wts_dir/wl-gone/g.txt"
+    git -C "$wts_dir/wl-gone" add g.txt
+    git -C "$wts_dir/wl-gone" commit -m "gone work" >/dev/null 2>&1
+    git -C "$wts_dir/wl-gone" push -u origin wl-gone >/dev/null 2>&1
+    git -C "$main_dir" push origin --delete wl-gone >/dev/null 2>&1
+    git -C "$main_dir" worktree add "$wts_dir/wl-active" -b wl-active >/dev/null 2>&1
+    echo a >"$wts_dir/wl-active/a.txt"
+    git -C "$wts_dir/wl-active" add a.txt
+    git -C "$wts_dir/wl-active" commit -m "active work" >/dev/null 2>&1
+
+    # Fake HOME so a real user config can't change protected branches or
+    # stale_days under the test (same pattern as the config-helper test)
+    set -l fake_home /tmp/git-fish-wlist-home-(random)
+    mkdir -p "$fake_home"
+    set -l orig_home $HOME
+    set -lx HOME $fake_home
+
+    set -l orig_dir (pwd)
+    cd "$main_dir"
+
+    echo "Test 1: table lists every registered worktree with its state..."
+    set total_tests (math $total_tests + 1)
+    # wl-gone is already [gone] locally (push --delete pruned the tracking
+    # ref); wclean's tests own the fetch --prune regression coverage.
+    # Accumulate match failures rather than one long multi-line condition —
+    # simpler to read and no single line breaks the 100-char limit.
+    set -l output (git-wlist 2>/dev/null | string collect)
+    set -l misses 0
+    string match -q '*NAME*' -- $output; or set misses (math $misses + 1)
+    string match -rq 'wl-merged\s.*merged' -- $output; or set misses (math $misses + 1)
+    string match -rq 'wl-gone\s.*gone' -- $output; or set misses (math $misses + 1)
+    string match -rq 'wl-active\s.*active' -- $output; or set misses (math $misses + 1)
+    string match -q '*protected*' -- $output; or set misses (math $misses + 1)
+    if test $misses -eq 0
+        echo "✅ all worktrees listed with expected states"
+    else
+        echo "❌ table missing rows/states:"
+        printf '%s\n' $output
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: reapable states sort above active/protected..."
+    set total_tests (math $total_tests + 1)
+    # The protected row is the main worktree; its NAME is the basename of
+    # $main_dir, so key off the STATE column instead of the name.
+    set -l lines (git-wlist 2>/dev/null)
+    set -l merged_idx 0
+    set -l active_idx 0
+    set -l protected_idx 0
+    for i in (seq (count $lines))
+        string match -q '*wl-merged*' -- $lines[$i]; and set merged_idx $i
+        string match -q '*wl-active*' -- $lines[$i]; and set active_idx $i
+        string match -q '*protected*' -- $lines[$i]; and set protected_idx $i
+    end
+    if test $merged_idx -gt 0; and test $merged_idx -lt $active_idx; and test $active_idx -lt $protected_idx
+        echo "✅ sort order: merged < active < protected"
+    else
+        echo "❌ row order wrong: merged=$merged_idx active=$active_idx protected=$protected_idx"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 3: --stale-days validates its argument..."
+    set total_tests (math $total_tests + 1)
+    git-wlist --stale-days 5 >/dev/null 2>&1
+    set -l ok_status $status
+    git-wlist --stale-days banana >/dev/null 2>&1
+    set -l bad_status $status
+    if test $ok_status -eq 0; and test $bad_status -eq 1
+        echo "✅ --stale-days validates its argument"
+    else
+        echo "❌ ok=$ok_status (want 0) bad=$bad_status (want 1)"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: locked worktrees carry a [locked] annotation..."
+    set total_tests (math $total_tests + 1)
+    git -C "$main_dir" worktree lock "$wts_dir/wl-active" >/dev/null 2>&1
+    set -l locked_out (git-wlist 2>/dev/null | string collect)
+    git -C "$main_dir" worktree unlock "$wts_dir/wl-active" >/dev/null 2>&1
+    if string match -rq 'wl-active \[locked\]' -- $locked_out
+        echo "✅ [locked] shown in NAME column"
+    else
+        echo "❌ locked annotation missing:"
+        printf '%s\n' $locked_out
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 5: positional arguments are rejected..."
+    set total_tests (math $total_tests + 1)
+    git-wlist somearg >/dev/null 2>&1
+    if test $status -eq 1
+        echo "✅ positional argument rejected with exit 1"
+    else
+        echo "❌ expected exit 1"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 6: outside a git repo exits 2..."
+    set total_tests (math $total_tests + 1)
+    set -l empty_dir /tmp/git-fish-wlist-empty-(random)
+    mkdir -p "$empty_dir"
+    cd "$empty_dir"
+    git-wlist >/dev/null 2>&1
+    if test $status -eq 2
+        echo "✅ non-repo exits 2"
+    else
+        echo "❌ expected exit 2, got $status"
+        set failed_tests (math $failed_tests + 1)
+    end
+    cd "$main_dir"
+    rm -rf "$empty_dir"
+
+    # Cleanup (restore HOME, drop config globals leaked by running git-wlist)
+    set -lx HOME $orig_home
+    cd "$orig_dir"
+    git -C "$main_dir" worktree prune >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir" "$fake_home"
+    set -e _wclean_config_protected_branches _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout _wclean_config_stale_days
+
+    echo "📊 git-wlist results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -1849,6 +2014,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_worktree_status_pr_closed
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wlist
     set total_failed (math $total_failed + $status)
 
     echo ""
