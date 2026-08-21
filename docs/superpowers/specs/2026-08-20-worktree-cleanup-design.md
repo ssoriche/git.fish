@@ -242,7 +242,11 @@ neither `timeout` nor `gtimeout` is installed (common on stock macOS). That
 fallback is unacceptable in a prompt hook, so `--check` **skips the fetch
 entirely** when no timeout utility is available and classifies against the
 last-fetched state. Full `git wclean` and `git wlist` keep the existing
-fallback (they're interactive and interruptible).
+fallback (they're interactive and interruptible). The fetch runs with
+`GIT_TERMINAL_PROMPT=0` so it can never prompt for credentials on a tty — a
+hook must not stall or garble the greeting. `--check` also never triggers a
+directory change, so user PWD hooks (zoxide, direnv) cannot fire or print
+during the greeting.
 
 ```
 git-wclean: 2 reapable (1 merged, 1 gone), 1 stale — run 'git wclean'

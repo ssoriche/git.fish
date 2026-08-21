@@ -2,8 +2,13 @@
 
 # Signal handling for clean shutdown - shared cleanup logic
 function _wclean_cleanup_handler
-    # Restore original directory if we're in a different one
-    if set -q _wclean_original_dir; and test -d "$_wclean_original_dir"
+    # Restore original directory if we're in a different one. Skip the cd
+    # entirely when we're already there: fish fires PWD event handlers
+    # (zoxide, direnv, user hooks) even on a same-directory cd, and their
+    # noise must never reach a --check invocation from fish_greeting.
+    if set -q _wclean_original_dir
+        and test -d "$_wclean_original_dir"
+        and test "$PWD" != "$_wclean_original_dir"
         cd "$_wclean_original_dir" 2>/dev/null
     end
 
@@ -51,8 +56,11 @@ end
 
 # Clean up function for normal exit
 function _wclean_normal_cleanup
-    # Restore original directory
-    if set -q _wclean_original_dir; and test -d "$_wclean_original_dir"
+    # Restore original directory. Skip the cd when we're already there: see
+    # the matching comment in _wclean_cleanup_handler for why (PWD hooks).
+    if set -q _wclean_original_dir
+        and test -d "$_wclean_original_dir"
+        and test "$PWD" != "$_wclean_original_dir"
         cd "$_wclean_original_dir" 2>/dev/null
     end
 
@@ -690,12 +698,16 @@ function _wclean_run_check
 
     # Fetch guard: only fetch when a timeout utility exists — an unbounded
     # fetch is unacceptable in a prompt hook. Otherwise classify against the
-    # last-fetched state.
+    # last-fetched state. GIT_TERMINAL_PROMPT=0 stops git from talking to
+    # /dev/tty directly for credentials — the timeout alone only bounds
+    # duration, not interactivity, and a stalled or garbled prompt hook is
+    # unacceptable.
     set -l timeout_cmd
     command -q timeout; and set timeout_cmd timeout
     test -z "$timeout_cmd"; and command -q gtimeout; and set timeout_cmd gtimeout
     if contains origin (git remote 2>/dev/null); and test -n "$timeout_cmd"
-        $timeout_cmd $_wclean_config_fetch_timeout git fetch --prune origin >/dev/null 2>&1
+        $timeout_cmd $_wclean_config_fetch_timeout env GIT_TERMINAL_PROMPT=0 \
+            git fetch --prune origin >/dev/null 2>&1
     end
 
     set -l integration_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
