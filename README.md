@@ -204,6 +204,13 @@ git wclean --dry-run ~/worktrees
 # Clean worktrees but keep local branches
 git wclean --no-delete-branch ~/worktrees
 
+# Use a tighter staleness window when reporting stale worktrees
+git wclean --stale-days 7 ~/worktrees
+
+# Print a one-line nudge if anything is reapable, then exit (see "Cleanup
+# nudge" below)
+git wclean --check
+
 # Get help
 git wclean --help
 ```
@@ -212,9 +219,15 @@ git wclean --help
 
 - Scans directory for git worktrees
 - Checks if commits are merged to upstream branch
-- Removes only safely merged worktrees
+- Also detects worktrees whose upstream branch is `gone` on the remote and,
+  for github.com remotes with `gh` installed, worktrees whose PR is merged or
+  closed — both removed only after a per-worktree confirmation (skippable
+  with `--force`)
+- Never removes a worktree with uncommitted changes, even with `--force`
+- Reports worktrees older than the staleness window for manual review instead
+  of removing them
 - **Automatically deletes associated local branches** (unless `--no-delete-branch` is used)
-- Provides detailed summary of actions taken
+- Provides a detailed summary of actions taken, broken down by category
 
 #### `git wjump` / `git-wjump`
 
@@ -262,6 +275,27 @@ git wrm --no-delete-branch ~/worktrees/feature-branch
 - Force option for override (with warnings)
 - **Automatically deletes associated local branch** (unless `--no-delete-branch` is used)
 - Clear feedback and guidance when commits aren't merged
+
+#### `git wlist` / `git-wlist`
+
+Dashboard of every registered worktree's lifecycle state.
+
+```fish
+# List all worktrees with their lifecycle state
+git wlist
+
+# Use a tighter staleness window
+git wlist --stale-days 7
+```
+
+**Features:**
+
+- Classifies every worktree as `merged`, `pr-closed`, `gone`, `stale`, `active`,
+  `detached`, `protected`, or `error`
+- Shows branch, dirty flag, and age in days since the last commit
+- Sorted by state, oldest first within each state
+- Runs a single `git fetch --prune origin` up front, bounded by the fetch
+  timeout config when a timeout utility is available
 
 ### Utility Commands
 
@@ -316,6 +350,20 @@ The `git` function enhances the standard git command by:
 - Automatically detecting and using custom fish functions
 - Falling back to standard git for unrecognized commands
 - Maintaining full compatibility with existing git usage
+
+### Cleanup nudge
+
+Add a one-line reminder about reapable worktrees to your shell greeting:
+
+```fish
+function fish_greeting
+    git wclean --check
+end
+```
+
+`--check` prints at most one line, only when something is reapable, always
+exits 0, never runs `gh`, never sources repo-local config, and skips the
+fetch entirely when no `timeout`/`gtimeout` utility is installed.
 
 ## Common Workflows
 
