@@ -679,8 +679,76 @@ function _wclean_show_summary
     printf "\nWorktree cleanup completed!\n"
 end
 
-# Placeholder until the real check mode lands (Task 7): silent success.
+# --check mode: at most one line on stdout, only when something is reapable.
+# Every runtime failure is silent success — a prompt hook must never break
+# the shell. Reapable = state in {merged, gone} AND clean; pr-closed is
+# impossible here because classification always runs --no-forge (a hung gh
+# call must never stall a prompt). Stale is appended only when reapable > 0.
 function _wclean_run_check
+    git rev-parse --git-dir >/dev/null 2>&1
+    or return 0
+
+    # Fetch guard: only fetch when a timeout utility exists — an unbounded
+    # fetch is unacceptable in a prompt hook. Otherwise classify against the
+    # last-fetched state.
+    set -l timeout_cmd
+    command -q timeout; and set timeout_cmd timeout
+    test -z "$timeout_cmd"; and command -q gtimeout; and set timeout_cmd gtimeout
+    if contains origin (git remote 2>/dev/null); and test -n "$timeout_cmd"
+        $timeout_cmd $_wclean_config_fetch_timeout git fetch --prune origin >/dev/null 2>&1
+    end
+
+    set -l integration_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+        | string replace 'refs/remotes/' '')
+    if test -z "$integration_branch"; and test -n "$_wclean_config_default_upstream"
+        set integration_branch $_wclean_config_default_upstream
+    end
+
+    # Enumerate registered worktrees, skipping the bare repo entry
+    set -l paths
+    set -l current_path ""
+    set -l is_bare 0
+    for line in (git worktree list --porcelain 2>/dev/null)
+        if string match -q 'worktree *' -- $line
+            if test -n "$current_path"; and test $is_bare -eq 0
+                set -a paths $current_path
+            end
+            set current_path (string replace 'worktree ' '' -- $line)
+            set is_bare 0
+        else if test "$line" = bare
+            set is_bare 1
+        end
+    end
+    if test -n "$current_path"; and test $is_bare -eq 0
+        set -a paths $current_path
+    end
+
+    set -l merged_count 0
+    set -l gone_count 0
+    set -l stale_count 0
+    for p in $paths
+        set -l line (_git_worktree_status --no-forge "$p" "$integration_branch" \
+            $_wclean_config_stale_days $_wclean_config_protected_branches)
+        set -l f (string split \t -- $line)
+        switch $f[1]
+            case merged
+                test "$f[4]" = clean; and set merged_count (math $merged_count + 1)
+            case gone
+                test "$f[4]" = clean; and set gone_count (math $gone_count + 1)
+            case stale
+                set stale_count (math $stale_count + 1)
+        end
+    end
+
+    set -l reapable (math $merged_count + $gone_count)
+    if test $reapable -gt 0
+        set -l msg (printf "git-wclean: %d reapable (%d merged, %d gone)" \
+            $reapable $merged_count $gone_count)
+        if test $stale_count -gt 0
+            set msg "$msg, $stale_count stale"
+        end
+        printf "%s — run 'git wclean'\n" $msg
+    end
     return 0
 end
 
