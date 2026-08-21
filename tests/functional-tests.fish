@@ -1985,6 +1985,189 @@ function test_git_wlist --description "Test git-wlist table output, sorting, and
     return $failed_tests
 end
 
+function test_git_wclean_states --description "Test wclean gone-confirm, dirty block, stale report, and --prune"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wclean state-driven cleanup..."
+
+    set -p fish_function_path $test_functions_dir
+    source $test_functions_dir/git-wclean.fish
+
+    # Fake HOME: Test 8 relies on the default protected set ('develop') and
+    # the stale test on the default 30-day window; a real user config could
+    # flip either
+    set -l fake_home /tmp/git-fish-wcs-home-(random)
+    mkdir -p "$fake_home"
+    set -l orig_home $HOME
+    set -lx HOME $fake_home
+
+    # Rebuildable fixture: bare remote + main + a fresh worktrees dir per scenario
+    function _wcs_fixture --argument-names remote_dir main_dir wts_dir
+        rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+        git init --bare -b main "$remote_dir" >/dev/null 2>&1
+        git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+        git -C "$main_dir" config user.name "Test User"
+        git -C "$main_dir" config user.email "test@example.com"
+        git -C "$main_dir" config commit.gpgsign false
+        # A global fetch.prune=true would make the --prune regression test
+        # non-discriminating; pin it off so only wclean's own --prune prunes
+        git -C "$main_dir" config fetch.prune false
+        echo "# Test" >"$main_dir/README.md"
+        git -C "$main_dir" add README.md
+        git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+        git -C "$main_dir" push -u origin main >/dev/null 2>&1
+        git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+        mkdir -p "$wts_dir"
+    end
+
+    set -l remote_dir /tmp/git-fish-wcs-remote-(random).git
+    set -l main_dir /tmp/git-fish-wcs-main-(random)
+    set -l wts_dir /tmp/git-fish-wcs-wts-(random)
+    set -l orig_dir (pwd)
+
+    # --- gone scenarios: delete the branch directly in the bare remote.
+    # A 'git push --delete' from $main_dir would remove the local tracking
+    # ref immediately and defeat the point: deleting in the remote leaves the
+    # tracking ref in place, so ONLY wclean's own fetch --prune can produce
+    # the gone state — this is the spec-required --prune coverage. ---
+    _wcs_fixture "$remote_dir" "$main_dir" "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/gone-wt" -b wcs-gone >/dev/null 2>&1
+    echo g >"$wts_dir/gone-wt/g.txt"
+    git -C "$wts_dir/gone-wt" add g.txt
+    git -C "$wts_dir/gone-wt" commit -m "gone work" >/dev/null 2>&1
+    git -C "$wts_dir/gone-wt" push -u origin wcs-gone >/dev/null 2>&1
+    git -C "$remote_dir" branch -D wcs-gone >/dev/null 2>&1
+    cd "$main_dir"
+
+    echo "Test 1: gone + answer n keeps the worktree (and wclean's fetch pruned)..."
+    set total_tests (math $total_tests + 1)
+    set -l out (echo n | git-wclean "$wts_dir" 2>&1 | string collect)
+    if test -d "$wts_dir/gone-wt"; and string match -q '*Candidate:*upstream gone*' -- $out
+        echo "✅ candidate line shown (proves --prune ran), 'n' kept the worktree"
+    else
+        echo "❌ worktree exists: "(test -d "$wts_dir/gone-wt"; and echo yes; or echo no)", output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: gone + answer y removes the worktree..."
+    set total_tests (math $total_tests + 1)
+    echo y | git-wclean "$wts_dir" >/dev/null 2>&1
+    if not test -d "$wts_dir/gone-wt"
+        echo "✅ 'y' removed the gone worktree"
+    else
+        echo "❌ gone worktree should be removed"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 3: gone + --dry-run lists 'needs confirm' and keeps..."
+    set total_tests (math $total_tests + 1)
+    _wcs_fixture "$remote_dir" "$main_dir" "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/gone-wt" -b wcs-gone2 >/dev/null 2>&1
+    echo g >"$wts_dir/gone-wt/g.txt"
+    git -C "$wts_dir/gone-wt" add g.txt
+    git -C "$wts_dir/gone-wt" commit -m "gone work" >/dev/null 2>&1
+    git -C "$wts_dir/gone-wt" push -u origin wcs-gone2 >/dev/null 2>&1
+    git -C "$remote_dir" branch -D wcs-gone2 >/dev/null 2>&1
+    cd "$main_dir"
+    set -l out (git-wclean --dry-run "$wts_dir" 2>&1 | string collect)
+    if test -d "$wts_dir/gone-wt"; and string match -q '*needs confirm*' -- $out
+        echo "✅ dry-run reports 'needs confirm' without removing"
+    else
+        echo "❌ dry-run wrong: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: gone + --force removes without a prompt..."
+    set total_tests (math $total_tests + 1)
+    git-wclean --force "$wts_dir" </dev/null >/dev/null 2>&1
+    if not test -d "$wts_dir/gone-wt"
+        echo "✅ --force removed with no prompt (stdin closed)"
+    else
+        echo "❌ --force should have removed the gone worktree"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 5: merged + dirty is kept, even with --force..."
+    set total_tests (math $total_tests + 1)
+    _wcs_fixture "$remote_dir" "$main_dir" "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/dirty-merged" -b wcs-dirty >/dev/null 2>&1
+    echo uncommitted >"$wts_dir/dirty-merged/uncommitted.txt"
+    cd "$main_dir"
+    git-wclean --force "$wts_dir" </dev/null >/dev/null 2>&1
+    if test -d "$wts_dir/dirty-merged"
+        echo "✅ dirty merged worktree kept under --force"
+    else
+        echo "❌ dirty worktree must never be removed"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 6: merged + clean still removed with no prompt..."
+    set total_tests (math $total_tests + 1)
+    rm "$wts_dir/dirty-merged/uncommitted.txt"
+    git-wclean "$wts_dir" </dev/null >/dev/null 2>&1
+    if not test -d "$wts_dir/dirty-merged"
+        echo "✅ clean merged worktree removed promptlessly"
+    else
+        echo "❌ clean merged worktree should be removed"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 7: stale is reported but never removed, even with --force..."
+    set total_tests (math $total_tests + 1)
+    _wcs_fixture "$remote_dir" "$main_dir" "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/stale-wt" -b wcs-stale >/dev/null 2>&1
+    echo s >"$wts_dir/stale-wt/s.txt"
+    git -C "$wts_dir/stale-wt" add s.txt
+    env GIT_COMMITTER_DATE="2020-01-01T00:00:00" GIT_AUTHOR_DATE="2020-01-01T00:00:00" \
+        git -C "$wts_dir/stale-wt" commit -m "old" >/dev/null 2>&1
+    cd "$main_dir"
+    set -l out (git-wclean --force "$wts_dir" </dev/null 2>&1 | string collect)
+    # match the report text, not '*stale*': the 'Processing: stale-wt' line
+    # would satisfy that vacuously via the worktree's own name
+    if test -d "$wts_dir/stale-wt"; and string match -q '*never auto-removed*' -- $out
+        echo "✅ stale worktree reported and kept"
+    else
+        echo "❌ stale handling wrong: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 8: --force removes a merged protected worktree; default keeps it..."
+    set total_tests (math $total_tests + 1)
+    _wcs_fixture "$remote_dir" "$main_dir" "$wts_dir"
+    # 'develop' is in the default protected set; branch at main's HEAD = merged
+    git -C "$main_dir" worktree add "$wts_dir/develop" -b develop >/dev/null 2>&1
+    cd "$main_dir"
+    git-wclean "$wts_dir" </dev/null >/dev/null 2>&1
+    set -l kept (test -d "$wts_dir/develop"; and echo yes; or echo no)
+    git-wclean --force "$wts_dir" </dev/null >/dev/null 2>&1
+    set -l removed (test -d "$wts_dir/develop"; and echo no; or echo yes)
+    if test $kept = yes; and test $removed = yes
+        echo "✅ protected kept by default, removed with --force"
+    else
+        echo "❌ kept=$kept removed=$removed"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Cleanup
+    set -lx HOME $orig_home
+    cd "$orig_dir"
+    functions -e _wcs_fixture
+    git -C "$main_dir" worktree prune >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir" "$fake_home"
+
+    echo "📊 wclean state results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -2102,6 +2285,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wlist
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_states
     set total_failed (math $total_failed + $status)
 
     echo ""

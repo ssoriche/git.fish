@@ -9,9 +9,6 @@ function _wclean_cleanup_handler
 
     # Clean up any global variables we set
     set -e _wclean_worktrees_dir
-    set -e _wclean_head_commit
-    set -e _wclean_current_branch
-    set -e _wclean_upstream_branch
     set -e _wclean_main_repo
     set -e _wclean_remotes
     set -e _wclean_default_branch
@@ -302,7 +299,7 @@ function _wclean_fetch_remotes
 
         if test -n "$timeout_cmd"
             printf "Fetching from origin (timeout: %ds)...\n" $_wclean_config_fetch_timeout
-            if $timeout_cmd $_wclean_config_fetch_timeout git fetch origin >/dev/null 2>&1
+            if $timeout_cmd $_wclean_config_fetch_timeout git fetch --prune origin >/dev/null 2>&1
                 printf "✓ Fetched from origin\n"
             else
                 set -l fetch_status $status
@@ -314,7 +311,7 @@ function _wclean_fetch_remotes
             end
         else
             printf "Fetching from origin (no timeout utility found)...\n"
-            if git fetch origin >/dev/null 2>&1
+            if git fetch --prune origin >/dev/null 2>&1
                 printf "✓ Fetched from origin\n"
             else
                 printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
@@ -341,87 +338,6 @@ function _wclean_fetch_remotes
     end
 
     printf "\n"
-end
-
-# Helper function to check if a commit is merged into upstream
-function _wclean_check_merge_status
-    set -l worktree_path $argv[1]
-    set -l head_commit $argv[2]
-    set -l upstream_branch $argv[3]
-
-    # Validate inputs
-    if test -z "$head_commit"
-        printf "  Error: Invalid head commit provided\n" >&2
-        return 2
-    end
-
-    if test -z "$upstream_branch"
-        printf "  Error: Invalid upstream branch provided\n" >&2
-        return 2
-    end
-
-    # Check if the commit exists in the upstream branch
-    set -l branch_commits (git rev-list $head_commit --not $upstream_branch 2>/dev/null)
-    if test $status -ne 0
-        printf "  Error: Failed to check merge status against %s\n" $upstream_branch >&2
-        return 2
-    end
-
-    if test -z "$branch_commits"
-        printf "  ✓ Commit found in upstream branch %s.\n" $upstream_branch
-        return 0
-    else
-        printf "  ✗ Commit NOT found in upstream branch %s.\n" $upstream_branch
-        return 1
-    end
-end
-
-# Helper function to get worktree information
-function _wclean_get_worktree_info
-    set -l worktree_path $argv[1]
-
-    # Validate input
-    if test -z "$worktree_path"
-        printf "  Error: No worktree path provided\n" >&2
-        return 1
-    end
-
-    # Security validation
-    if not _wclean_validate_path "$worktree_path" "worktree path"
-        return 1
-    end
-
-    if not test -d "$worktree_path"
-        printf "  Error: Worktree path '%s' is not a directory\n" $worktree_path >&2
-        return 1
-    end
-
-    # Performance optimization: use git -C to avoid directory changes
-    # Get the current HEAD commit hash
-    set -l head_commit (git -C "$worktree_path" rev-parse HEAD 2>/dev/null)
-    if test $status -ne 0
-        printf "  Error: Failed to get HEAD commit in '%s'\n" $worktree_path >&2
-        return 1
-    end
-
-    # Get the current branch name for potential deletion
-    set -l current_branch_name (git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    if test $status -ne 0
-        set current_branch_name ""
-    end
-
-    # Verify against the upstream project's default branch (origin/HEAD, cached
-    # in _wclean_default_branch), NOT the worktree branch's own remote-tracking
-    # branch (@{upstream}) — a feature branch pushed to origin/<feature> would
-    # always "match" itself and defeat the merge check.
-    set -l upstream_branch $_wclean_default_branch
-    printf "  Integration branch: %s\n" $upstream_branch
-
-    # Export results as global variables for the caller
-    set -g _wclean_head_commit $head_commit
-    set -g _wclean_current_branch $current_branch_name
-    set -g _wclean_upstream_branch $upstream_branch
-    return 0
 end
 
 # Helper function to find the main repository path
@@ -583,17 +499,16 @@ function _wclean_remove_branch
     end
 end
 
-# Helper function to process a single worktree
+# Helper function to process a single worktree, driven by the shared classifier.
+# Returns 0 when the worktree was removed (or would be, in dry-run), 1 otherwise.
 function _wclean_process_worktree
     set -l worktree_path $argv[1]
 
-    # Validate input
     if test -z "$worktree_path"
         printf "Error: No worktree path provided for processing\n" >&2
         return 1
     end
 
-    # Security validation
     if not _wclean_validate_path "$worktree_path" "worktree path"
         return 1
     end
@@ -602,63 +517,88 @@ function _wclean_process_worktree
         return 1
     end
 
-    # Performance optimization: quick git repo check without changing directories
     if not test -e "$worktree_path/.git"
         printf "Skipping '%s': Not a git repository.\n" (basename $worktree_path)
         return 1
     end
 
-    printf "Processing: %s\n" (basename $worktree_path)
+    set -l name (basename $worktree_path)
+    printf "Processing: %s\n" $name
 
-    # Get worktree information (this function handles directory changes internally)
-    if not _wclean_get_worktree_info "$worktree_path"
-        # Error message already printed by the helper function
-        return 1
-    end
+    # --force preserves the documented escape hatch by classifying with an
+    # empty protected list, so protected worktrees fall through to the normal
+    # rules (the basename guard in _wclean_remove_worktree is force-gated too)
+    set -l protected_list $_wclean_config_protected_branches
+    set -q _wclean_flag_force; and set protected_list
 
-    # Performance optimization: use git -C to avoid repeated pushd/popd
-    set -l merge_check_status 2
-    set -l branch_commits (git -C "$worktree_path" rev-list $_wclean_head_commit --not $_wclean_upstream_branch 2>/dev/null)
-    if test $status -eq 0
-        if test -z "$branch_commits"
-            set merge_check_status 0 # Merged
-            printf "  ✓ Commit found in upstream branch %s.\n" $_wclean_upstream_branch
-        else
-            set merge_check_status 1 # Not merged
-            printf "  ✗ Commit NOT found in upstream branch %s.\n" $_wclean_upstream_branch
-        end
-    else
-        printf "  Error: Failed to check merge status against %s\n" $_wclean_upstream_branch >&2
-        set merge_check_status 2 # Error
-    end
+    set -l line (_git_worktree_status "$worktree_path" "$_wclean_default_branch" \
+        $_wclean_stale_days $protected_list)
+    set -l f (string split \t -- $line)
+    set -l state $f[1]
+    set -l branch $f[2]
+    test "$branch" = -; and set branch ""
+    set -l dirty $f[4]
+    set -l age $f[5]
 
-    switch $merge_check_status
-        case 0
-            # Commit is merged, proceed with removal
-
-            # Find main repository
-            if not _wclean_find_main_repo "$worktree_path"
-                # Error message already printed by the helper function
+    switch $state
+        case merged
+            if test "$dirty" = dirty
+                printf "  ✗ Merged into %s but has uncommitted changes. Keeping worktree.\n" \
+                    $_wclean_default_branch
                 return 1
             end
-
-            # Remove the worktree
-            if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$_wclean_current_branch"
-                return 0 # Successfully removed
-            else
-                return 1 # Skipped or failed
+            printf "  ✓ Merged into %s.\n" $_wclean_default_branch
+            if not _wclean_find_main_repo "$worktree_path"
+                return 1
             end
-        case 1
-            # Commit not merged, keep worktree
-            printf "  - Commit not found on %s. Keeping worktree.\n" $_wclean_upstream_branch
+            if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$branch"
+                return 0
+            end
             return 1
-        case 2
-            # Error occurred during merge status check
-            printf "  Error: Failed to check merge status, skipping worktree.\n" >&2
+        case gone pr-closed
+            set -l reason "upstream gone"
+            test $state = pr-closed; and set reason "PR merged/closed"
+            if test "$dirty" = dirty
+                printf "  ✗ %s but has uncommitted changes. Keeping worktree.\n" $reason
+                return 1
+            end
+            # Printed before the prompt: read -P shows nothing on non-tty
+            # stdin, so this line is the only visible removal-candidate signal
+            printf "  Candidate: %s (%s)\n" $name $reason
+            if set -q _wclean_flag_dry_run
+                printf "Would remove worktree: %s (needs confirm: %s)\n" $name $reason
+                return 0
+            end
+            if not set -q _wclean_flag_force
+                read -l -P "Remove '$name' ($reason)? [y/N] " reply
+                if not string match -qi y -- "$reply"
+                    printf "  Keeping worktree.\n"
+                    return 1
+                end
+            end
+            if not _wclean_find_main_repo "$worktree_path"
+                return 1
+            end
+            if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$branch"
+                return 0
+            end
+            return 1
+        case stale
+            printf "  - Stale (%sd, threshold %sd). Review manually; never auto-removed.\n" \
+                $age $_wclean_stale_days
+            set -ga _wclean_stale_report "$name ($age"d")"
+            return 1
+        case protected
+            printf "  Protected: '%s' worktree will not be removed for safety.\n" $name
+            return 1
+        case detached
+            printf "  - Detached HEAD. Keeping worktree.\n"
+            return 1
+        case error
+            printf "  Error: could not classify worktree. Keeping it.\n" >&2
             return 1
         case '*'
-            # Unexpected return value
-            printf "  Error: Unexpected result from merge status check, skipping worktree.\n" >&2
+            printf "  - Not merged (state: %s). Keeping worktree.\n" $state
             return 1
     end
 end
@@ -677,6 +617,13 @@ function _wclean_show_summary
         printf "  Removed: %d worktrees\n" $removed_count
     end
     printf "  Kept/Skipped: %d worktrees\n" $skipped_count
+
+    if set -q _wclean_stale_report[1]
+        printf "\nStale — review manually:\n"
+        for entry in $_wclean_stale_report
+            printf "  %s\n" $entry
+        end
+    end
 
     printf "\nWorktree cleanup completed!\n"
 end
