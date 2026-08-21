@@ -1436,6 +1436,74 @@ function test_git_wclean_config_helper --description "Test _git_wclean_config de
     return $failed_tests
 end
 
+function test_git_wclean_check_flags --description "Test --check/--stale-days argument validation"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wclean --check/--stale-days flag validation..."
+
+    set -p fish_function_path $test_functions_dir
+    source $test_functions_dir/git-wclean.fish
+
+    echo "Test 1: --check with --force exits 1..."
+    set total_tests (math $total_tests + 1)
+    git-wclean --check --force >/dev/null 2>&1
+    if test $status -eq 1
+        echo "✅ --check --force rejected"
+    else
+        echo "❌ expected exit 1, got $status"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: --check with a directory argument exits 1..."
+    set total_tests (math $total_tests + 1)
+    git-wclean --check /tmp >/dev/null 2>&1
+    if test $status -eq 1
+        echo "✅ --check <dir> rejected"
+    else
+        echo "❌ expected exit 1, got $status"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 3: --stale-days rejects non-numeric values..."
+    set total_tests (math $total_tests + 1)
+    git-wclean --stale-days banana /tmp >/dev/null 2>&1
+    if test $status -eq 1
+        echo "✅ non-numeric --stale-days rejected"
+    else
+        echo "❌ expected exit 1, got $status"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: --check outside a git repo exits 0 silently..."
+    set total_tests (math $total_tests + 1)
+    set -l empty_dir /tmp/git-fish-check-empty-(random)
+    mkdir -p "$empty_dir"
+    set -l orig_dir (pwd)
+    cd "$empty_dir"
+    set -l out (git-wclean --check 2>&1)
+    set -l st $status
+    cd "$orig_dir"
+    rm -rf "$empty_dir"
+    if test $st -eq 0; and test -z "$out"
+        echo "✅ silent exit 0 outside a repo"
+    else
+        echo "❌ status=$st output='$out'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "📊 --check flag results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function test_git_worktree_status_classifier --description "Test _git_worktree_status core state classification"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
@@ -2004,6 +2072,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_config_helper
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_check_flags
     set total_failed (math $total_failed + $status)
 
     echo ""
