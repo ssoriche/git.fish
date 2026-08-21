@@ -22,6 +22,9 @@ function _wclean_cleanup_handler
     set -e _wclean_flag_dry_run
     set -e _wclean_flag_force
     set -e _wclean_flag_no_delete_branch
+    set -e _wclean_flag_check
+    set -e _wclean_stale_days
+    set -e _wclean_stale_report
 
     # Clean up config variables
     set -e _wclean_config_protected_branches
@@ -67,6 +70,9 @@ function _wclean_normal_cleanup
     set -e _wclean_flag_dry_run
     set -e _wclean_flag_force
     set -e _wclean_flag_no_delete_branch
+    set -e _wclean_flag_check
+    set -e _wclean_stale_days
+    set -e _wclean_stale_report
 
     # Clean up config variables
     set -e _wclean_config_protected_branches
@@ -118,7 +124,7 @@ end
 
 # Helper function to parse and validate arguments
 function _wclean_parse_args
-    argparse --name=git-wclean h/help n/dry-run f/force no-delete-branch -- $argv
+    argparse --name=git-wclean h/help n/dry-run f/force no-delete-branch check 's/stale-days=' -- $argv
     or return 1
 
     # Show help if requested. argparse populates _flag_help only in this
@@ -130,6 +136,31 @@ function _wclean_parse_args
         _git_help_from_doc_comment git-wclean
         set -g _wclean_flag_help
         return 0
+    end
+
+    # --check is a standalone mode: any other flag or a positional argument is
+    # a misconfigured hook and must fail loudly (runtime conditions inside the
+    # check itself stay silent instead)
+    set -e _wclean_flag_check
+    if set -q _flag_check
+        if set -q _flag_dry_run; or set -q _flag_force
+            or set -q _flag_no_delete_branch; or set -q _flag_stale_days
+            or test (count $argv) -gt 0
+            printf "Error: --check cannot be combined with other options or arguments\n" >&2
+            return 1
+        end
+        set -g _wclean_flag_check
+        return 0
+    end
+
+    # Validate and promote --stale-days (flag overrides config later)
+    set -e _wclean_stale_days
+    if set -q _flag_stale_days
+        if not string match -qr '^\d+$' -- $_flag_stale_days
+            printf "Error: --stale-days requires a non-negative integer\n" >&2
+            return 1
+        end
+        set -g _wclean_stale_days $_flag_stale_days
     end
 
     # Layout-aware default: in a .bare layout, if no path was given, use the container
@@ -645,6 +676,11 @@ function _wclean_show_summary
     printf "\nWorktree cleanup completed!\n"
 end
 
+# Placeholder until the real check mode lands (Task 7): silent success.
+function _wclean_run_check
+    return 0
+end
+
 function git-wclean --description "Clean up git worktrees that have been merged to upstream branch"
     # Git Worktree Clean - Removes worktrees whose commits have been merged to upstream branch
     #
@@ -734,10 +770,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     # Store original directory for cleanup
     set -g _wclean_original_dir (pwd)
 
-    # Load configuration first
-    _git_wclean_config --allow-local
-
-    # Parse and validate arguments
+    # Parse and validate arguments first: --check changes how config loads
     if not _wclean_parse_args $argv
         return 1
     end
@@ -751,6 +784,25 @@ function git-wclean --description "Clean up git worktrees that have been merged 
         _wclean_normal_cleanup
         return 0
     end
+
+    # --check: silent one-line nudge mode; never sources repo-local config
+    if set -q _wclean_flag_check
+        _git_wclean_config --quiet
+        _wclean_run_check
+        _wclean_normal_cleanup
+        return 0
+    end
+
+    # Load configuration (full runs may opt into repo-local config)
+    _git_wclean_config --allow-local
+
+    # Staleness window: --stale-days flag beats config
+    set -q _wclean_stale_days
+    or set -g _wclean_stale_days $_wclean_config_stale_days
+
+    # Fresh stale report per run: an earlier aborted run in the same shell
+    # may have leaked the global, and set -ga would append across runs
+    set -e _wclean_stale_report
 
     # Setup and validate directory
     if not _wclean_setup_directory
