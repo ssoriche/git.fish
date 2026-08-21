@@ -124,6 +124,14 @@ end
 
 # Helper function to parse and validate arguments
 function _wclean_parse_args
+    # Reset globals promoted by a previous parse BEFORE argparse or any
+    # validation can early-return: a failed parse (e.g. too many arguments)
+    # must never leave a stale value behind for a later call in the same
+    # shell to silently pick up.
+    set -e _wclean_flag_help
+    set -e _wclean_flag_check
+    set -e _wclean_stale_days
+
     argparse --name=git-wclean h/help n/dry-run f/force no-delete-branch check 's/stale-days=' -- $argv
     or return 1
 
@@ -131,7 +139,6 @@ function _wclean_parse_args
     # function's local scope, so promote it to a global (cleaned up in the
     # cleanup handlers) so the caller in git-wclean can detect it and stop
     # cleanly instead of falling through into directory setup.
-    set -e _wclean_flag_help
     if set -q _flag_help
         _git_help_from_doc_comment git-wclean
         set -g _wclean_flag_help
@@ -141,7 +148,6 @@ function _wclean_parse_args
     # --check is a standalone mode: any other flag or a positional argument is
     # a misconfigured hook and must fail loudly (runtime conditions inside the
     # check itself stay silent instead)
-    set -e _wclean_flag_check
     if set -q _flag_check
         if set -q _flag_dry_run; or set -q _flag_force
             or set -q _flag_no_delete_branch; or set -q _flag_stale_days
@@ -154,7 +160,6 @@ function _wclean_parse_args
     end
 
     # Validate and promote --stale-days (flag overrides config later)
-    set -e _wclean_stale_days
     if set -q _flag_stale_days
         if not string match -qr '^\d+$' -- $_flag_stale_days
             printf "Error: --stale-days requires a non-negative integer\n" >&2
