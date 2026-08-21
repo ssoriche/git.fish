@@ -21,8 +21,9 @@ function _git_wclean_config --description "Load git-wclean config: defaults, the
     #   --quiet         Suppress the "Loading configuration from" stderr message
     #
     # EXIT STATUS
-    #   0    Always (a missing config file is not an error)
-    argparse allow-local quiet -- $argv
+    #   0    Success (a missing config file is not an error)
+    #   1    Usage error (unknown flag)
+    argparse --name=_git_wclean_config allow-local quiet -- $argv
     or return 1
 
     # Defaults

@@ -1424,9 +1424,12 @@ function test_git_wclean_config_helper --description "Test _git_wclean_config de
     set -lx HOME $orig_home
     cd "$orig_dir"
     rm -rf "$fake_home" "$work_dir"
-    set -e _wclean_config_protected_branches _wclean_config_default_upstream
-    set -e _wclean_config_system_dirs _wclean_config_max_path_length
-    set -e _wclean_config_fetch_timeout _wclean_config_stale_days
+    set -e _wclean_config_protected_branches
+    set -e _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs
+    set -e _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout
+    set -e _wclean_config_stale_days
 
     echo "📊 _git_wclean_config results: $failed_tests/$total_tests failed"
     return $failed_tests
