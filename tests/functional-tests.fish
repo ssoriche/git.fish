@@ -2177,6 +2177,168 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     return $failed_tests
 end
 
+function test_git_wclean_check --description "Test git wclean --check silence, output, and fetch guard"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git wclean --check..."
+
+    set -p fish_function_path $test_functions_dir
+    source $test_functions_dir/git-wclean.fish
+
+    # Fake HOME so a real user config (stale_days, protected branches) can't
+    # change the silence/count assertions
+    set -l fake_home /tmp/git-fish-chk-home-(random)
+    mkdir -p "$fake_home"
+    set -l orig_home $HOME
+    set -lx HOME $fake_home
+
+    set -l remote_dir /tmp/git-fish-chk-remote-(random).git
+    set -l main_dir /tmp/git-fish-chk-main-(random)
+    set -l wts_dir /tmp/git-fish-chk-wts-(random)
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+    mkdir -p "$wts_dir"
+
+    set -l orig_dir (pwd)
+    cd "$main_dir"
+
+    echo "Test 1: nothing reapable -> silent, exit 0..."
+    set total_tests (math $total_tests + 1)
+    set -l out (git-wclean --check 2>&1)
+    set -l st $status
+    if test $st -eq 0; and test -z "$out"
+        echo "✅ silent exit 0 with nothing reapable"
+    else
+        echo "❌ status=$st output='$out'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: stale-only repo stays silent..."
+    set total_tests (math $total_tests + 1)
+    git -C "$main_dir" worktree add "$wts_dir/chk-stale" -b chk-stale >/dev/null 2>&1
+    echo s >"$wts_dir/chk-stale/s.txt"
+    git -C "$wts_dir/chk-stale" add s.txt
+    env GIT_COMMITTER_DATE="2020-01-01T00:00:00" GIT_AUTHOR_DATE="2020-01-01T00:00:00" \
+        git -C "$wts_dir/chk-stale" commit -m "old" >/dev/null 2>&1
+    set -l out (git-wclean --check 2>&1)
+    if test -z "$out"
+        echo "✅ stale alone does not trigger the nudge"
+    else
+        echo "❌ output='$out'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 3: gone worktree -> one-line nudge including stale count..."
+    set total_tests (math $total_tests + 1)
+    git -C "$main_dir" worktree add "$wts_dir/chk-gone" -b chk-gone >/dev/null 2>&1
+    echo g >"$wts_dir/chk-gone/g.txt"
+    git -C "$wts_dir/chk-gone" add g.txt
+    git -C "$wts_dir/chk-gone" commit -m "gone work" >/dev/null 2>&1
+    git -C "$wts_dir/chk-gone" push -u origin chk-gone >/dev/null 2>&1
+    # Deliberately push --delete here (NOT remote branch -D): it prunes the
+    # local tracking ref immediately, so this test passes even on machines
+    # with no timeout utility where --check skips its fetch. wclean's own
+    # --prune coverage lives in test_git_wclean_states.
+    git -C "$main_dir" push origin --delete chk-gone >/dev/null 2>&1
+    set -l out (git-wclean --check 2>&1)
+    set -l line_count (count $out)
+    if test $line_count -eq 1
+        and string match -q "*1 reapable*"     -- $out
+        and string match -q "*1 gone*"          -- $out
+        and string match -q "*1 stale*"         -- $out
+        and string match -q "*run 'git wclean'*" -- $out
+        echo "✅ one-line nudge with counts"
+    else
+        echo "❌ lines=$line_count output='$out'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: no timeout utility -> fetch skipped (unpruned gone stays invisible)..."
+    set total_tests (math $total_tests + 1)
+    # Remove the pruned tracking ref knowledge: recreate a deleted remote
+    # branch whose tracking ref is still present locally, then strip
+    # timeout/gtimeout from PATH. If --check skipped the fetch (correct), the
+    # ref is not pruned and nothing is reapable -> silent. If it fetched
+    # anyway, the ref gets pruned and the nudge appears -> fail.
+    echo y | git-wclean "$wts_dir" >/dev/null 2>&1  # clear the gone worktree first
+    git -C "$main_dir" worktree add "$wts_dir/chk-gone2" -b chk-gone2 >/dev/null 2>&1
+    echo g >"$wts_dir/chk-gone2/g.txt"
+    git -C "$wts_dir/chk-gone2" add g.txt
+    git -C "$wts_dir/chk-gone2" commit -m "gone work" >/dev/null 2>&1
+    git -C "$wts_dir/chk-gone2" push -u origin chk-gone2 >/dev/null 2>&1
+    git -C "$remote_dir" branch -D chk-gone2 >/dev/null 2>&1
+    set -l shim_dir /tmp/git-fish-chk-bin-(random)
+    mkdir -p "$shim_dir"
+    ln -s (command -s git) "$shim_dir/git"
+    ln -s (command -s date) "$shim_dir/date"
+    ln -s (command -s basename) "$shim_dir/basename"
+    set -l orig_path $PATH
+    set -lx PATH $shim_dir
+    set -l out (git-wclean --check 2>&1)
+    set -l st $status
+    set -lx PATH $orig_path
+    rm -rf "$shim_dir"
+    if test $st -eq 0; and test -z "$out"
+        echo "✅ fetch skipped without a timeout utility (silent, exit 0)"
+    else
+        echo "❌ status=$st output='$out'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 5: --check never invokes gh, even with a github remote..."
+    set total_tests (math $total_tests + 1)
+    # Arm the forge gate (github URL + gh on PATH) and prove --no-forge holds.
+    # PATH also omits timeout/gtimeout so the fetch is skipped: no network,
+    # no credential prompt, and the URL rewrite is inert.
+    git -C "$main_dir" remote set-url origin https://github.com/example/repo.git
+    set -l shim_dir /tmp/git-fish-chk-gh-(random)
+    mkdir -p "$shim_dir"
+    ln -s (command -s git) "$shim_dir/git"
+    ln -s (command -s date) "$shim_dir/date"
+    ln -s (command -s basename) "$shim_dir/basename"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\necho MERGED\n' "$shim_dir" >"$shim_dir/gh"
+    chmod +x "$shim_dir/gh"
+    set -l orig_path2 $PATH
+    set -lx PATH $shim_dir
+    git-wclean --check >/dev/null 2>&1
+    set -l st $status
+    set -lx PATH $orig_path2
+    if test $st -eq 0; and not test -f "$shim_dir/gh-called.log"
+        echo "✅ --check classified with --no-forge (gh stub never invoked)"
+    else
+        echo "❌ status=$st, gh invoked: "(test -f "$shim_dir/gh-called.log"; and echo yes; or echo no)
+        set failed_tests (math $failed_tests + 1)
+    end
+    rm -rf "$shim_dir"
+
+    # Cleanup
+    set -lx HOME $orig_home
+    cd "$orig_dir"
+    git -C "$main_dir" worktree prune >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir" "$fake_home"
+
+    echo "📊 --check results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -2299,6 +2461,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_states
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_check
     set total_failed (math $total_failed + $status)
 
     echo ""
