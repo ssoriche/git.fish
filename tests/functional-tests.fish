@@ -1176,7 +1176,7 @@ function test_git_wclean_path_validation --description "Regression tests for git
     source $test_functions_dir/git-wclean.fish
 
     # _wclean_validate_path reads this config global directly; set it so the
-    # helper can be exercised without going through _wclean_load_config.
+    # helper can be exercised without going through _git_wclean_config.
     set -g _wclean_config_max_path_length 4096
 
     # Test 1: a bare '..' must be rejected. The old pattern '*/..*' required a
@@ -1324,6 +1324,114 @@ function test_all_commands_help_no_leaked_comments --description "Data-driven ch
     return $failed
 end
 
+function test_git_wclean_config_helper --description "Test _git_wclean_config defaults, precedence, --allow-local, --quiet"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing _git_wclean_config helper..."
+
+    set -p fish_function_path $test_functions_dir
+    if not test -f "$test_functions_dir/_git_wclean_config.fish"
+        echo "❌ _git_wclean_config.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/_git_wclean_config.fish
+
+    # Fake HOME so real user config never interferes
+    set -l fake_home /tmp/git-fish-config-home-(random)
+    set -l work_dir /tmp/git-fish-config-work-(random)
+    mkdir -p "$fake_home" "$work_dir"
+    set -l orig_home $HOME
+    set -l orig_dir (pwd)
+    set -lx HOME $fake_home
+    cd "$work_dir"
+
+    # Test 1: defaults with no config files present
+    echo "Test 1: defaults..."
+    set total_tests (math $total_tests + 1)
+    _git_wclean_config --quiet
+    if test "$_wclean_config_stale_days" = 30
+        and test "$_wclean_config_fetch_timeout" = 30
+        and contains trunk $_wclean_config_protected_branches
+        echo "✅ defaults set (stale_days=30, fetch_timeout=30, trunk protected)"
+    else
+        echo "❌ defaults wrong: stale_days=$_wclean_config_stale_days"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 2: user config wins, loading message goes to stderr not stdout
+    echo "Test 2: user config file..."
+    set total_tests (math $total_tests + 1)
+    mkdir -p "$fake_home/.config/git-wclean"
+    printf 'set -g _wclean_config_stale_days 7\n' >"$fake_home/.config/git-wclean/config"
+    set -l cfg_stdout (_git_wclean_config 2>/dev/null)
+    if test "$_wclean_config_stale_days" = 7; and test -z "$cfg_stdout"
+        echo "✅ user config loaded; nothing on stdout"
+    else
+        echo "❌ stale_days=$_wclean_config_stale_days stdout='$cfg_stdout'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 3: --quiet suppresses the loading message on stderr too
+    echo "Test 3: --quiet..."
+    set total_tests (math $total_tests + 1)
+    set -l cfg_all (_git_wclean_config --quiet 2>&1)
+    if test -z "$cfg_all"
+        echo "✅ --quiet produces no output at all"
+    else
+        echo "❌ --quiet emitted: '$cfg_all'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 4: repo-local config ignored without --allow-local
+    echo "Test 4: local config needs --allow-local..."
+    set total_tests (math $total_tests + 1)
+    rm -rf "$fake_home/.config"
+    printf 'set -g _wclean_config_stale_days 3\n' >"$work_dir/.git-wclean-config"
+    _git_wclean_config --quiet
+    set -l without_local $_wclean_config_stale_days
+    _git_wclean_config --quiet --allow-local
+    set -l with_local $_wclean_config_stale_days
+    if test "$without_local" = 30; and test "$with_local" = 3
+        echo "✅ local config only honored with --allow-local"
+    else
+        echo "❌ without=$without_local with=$with_local (want 30 / 3)"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 5: first-match-wins — user config present means local is never read
+    echo "Test 5: first-match-wins..."
+    set total_tests (math $total_tests + 1)
+    mkdir -p "$fake_home/.config/git-wclean"
+    printf 'set -g _wclean_config_stale_days 7\n' >"$fake_home/.config/git-wclean/config"
+    _git_wclean_config --quiet --allow-local
+    if test "$_wclean_config_stale_days" = 7
+        echo "✅ user config shadows repo-local config"
+    else
+        echo "❌ stale_days=$_wclean_config_stale_days, want 7"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Cleanup
+    set -lx HOME $orig_home
+    cd "$orig_dir"
+    rm -rf "$fake_home" "$work_dir"
+    set -e _wclean_config_protected_branches _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout _wclean_config_stale_days
+
+    echo "📊 _git_wclean_config results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -1416,6 +1524,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_path_validation
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_config_helper
     set total_failed (math $total_failed + $status)
 
     echo ""

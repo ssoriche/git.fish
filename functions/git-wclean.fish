@@ -29,6 +29,7 @@ function _wclean_cleanup_handler
     set -e _wclean_config_system_dirs
     set -e _wclean_config_max_path_length
     set -e _wclean_config_fetch_timeout
+    set -e _wclean_config_stale_days
 
     printf "\n\n🚫 Operation interrupted by user. Cleanup completed.\n" >&2
     exit 130 # Standard exit code for Ctrl+C
@@ -73,29 +74,7 @@ function _wclean_normal_cleanup
     set -e _wclean_config_system_dirs
     set -e _wclean_config_max_path_length
     set -e _wclean_config_fetch_timeout
-end
-
-# Configuration defaults and loading
-function _wclean_load_config
-    # Set default configuration values
-    set -g _wclean_config_protected_branches main master develop trunk
-    # Empty by default: the integration branch is auto-detected from origin/HEAD.
-    # Set this in a config file ONLY to override that detection explicitly.
-    set -g _wclean_config_default_upstream ""
-    set -g _wclean_config_system_dirs /etc /bin /usr/bin /sbin /usr/sbin
-    set -g _wclean_config_max_path_length 4096
-    set -g _wclean_config_fetch_timeout 30
-
-    # Look for configuration files in order of preference
-    set -l config_files ~/.config/git-wclean/config ~/.git-wclean-config ./.git-wclean-config
-
-    for config_file in $config_files
-        if test -f "$config_file"; and test -r "$config_file"
-            printf "Loading configuration from: %s\n" $config_file
-            source "$config_file"
-            break
-        end
-    end
+    set -e _wclean_config_stale_days
 end
 
 # Security validation helper function
@@ -756,7 +735,7 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     set -g _wclean_original_dir (pwd)
 
     # Load configuration first
-    _wclean_load_config
+    _git_wclean_config --allow-local
 
     # Parse and validate arguments
     if not _wclean_parse_args $argv
