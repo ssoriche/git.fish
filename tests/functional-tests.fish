@@ -1972,14 +1972,36 @@ function test_git_wlist --description "Test git-wlist table output, sorting, and
     cd "$main_dir"
     rm -rf "$empty_dir"
 
+    echo "Test 7: _wclean_config_default_upstream overrides origin/HEAD..."
+    set total_tests (math $total_tests + 1)
+    # wl-active's commit is NOT on origin/main (state: active). Push it to a
+    # second remote branch and point the config override there: if the
+    # override wins over origin/HEAD, wl-active reclassifies as merged.
+    git -C "$wts_dir/wl-active" push origin wl-active:wl-alt >/dev/null 2>&1
+    mkdir -p "$fake_home/.config/git-wclean"
+    printf 'set -g _wclean_config_default_upstream origin/wl-alt\n' \
+        >"$fake_home/.config/git-wclean/config"
+    set -l override_out (git-wlist 2>/dev/null | string collect)
+    rm -f "$fake_home/.config/git-wclean/config"
+    if string match -rq 'wl-active\s.*merged' -- $override_out
+        echo "✅ config override took precedence over origin/HEAD"
+    else
+        echo "❌ override ignored; wl-active row:"
+        printf '%s\n' $override_out | string match -e wl-active
+        set failed_tests (math $failed_tests + 1)
+    end
+
     # Cleanup (restore HOME, drop config globals leaked by running git-wlist)
     set -lx HOME $orig_home
     cd "$orig_dir"
     git -C "$main_dir" worktree prune >/dev/null 2>&1
     rm -rf "$remote_dir" "$main_dir" "$wts_dir" "$fake_home"
-    set -e _wclean_config_protected_branches _wclean_config_default_upstream
-    set -e _wclean_config_system_dirs _wclean_config_max_path_length
-    set -e _wclean_config_fetch_timeout _wclean_config_stale_days
+    set -e _wclean_config_protected_branches
+    set -e _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs
+    set -e _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout
+    set -e _wclean_config_stale_days
 
     echo "📊 git-wlist results: $failed_tests/$total_tests failed"
     return $failed_tests
@@ -2166,12 +2188,18 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
         set failed_tests (math $failed_tests + 1)
     end
 
-    # Cleanup
+    # Cleanup (restore HOME, drop config globals leaked by running git-wclean)
     set -lx HOME $orig_home
     cd "$orig_dir"
     functions -e _wcs_fixture
     git -C "$main_dir" worktree prune >/dev/null 2>&1
     rm -rf "$remote_dir" "$main_dir" "$wts_dir" "$fake_home"
+    set -e _wclean_config_protected_branches
+    set -e _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs
+    set -e _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout
+    set -e _wclean_config_stale_days
 
     echo "📊 wclean state results: $failed_tests/$total_tests failed"
     return $failed_tests
@@ -2329,11 +2357,17 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
     end
     rm -rf "$shim_dir"
 
-    # Cleanup
+    # Cleanup (restore HOME, drop config globals leaked by running git-wclean)
     set -lx HOME $orig_home
     cd "$orig_dir"
     git -C "$main_dir" worktree prune >/dev/null 2>&1
     rm -rf "$remote_dir" "$main_dir" "$wts_dir" "$fake_home"
+    set -e _wclean_config_protected_branches
+    set -e _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs
+    set -e _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout
+    set -e _wclean_config_stale_days
 
     echo "📊 --check results: $failed_tests/$total_tests failed"
     return $failed_tests

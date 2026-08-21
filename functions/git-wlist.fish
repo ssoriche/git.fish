@@ -99,12 +99,12 @@ function git-wlist --description "List git worktrees with lifecycle state"
         end
     end
 
-    # Integration branch from origin/HEAD; config override wins. Empty is
-    # tolerated: the classifier then skips the merged check.
-    set -l integration_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
-        | string replace 'refs/remotes/' '')
-    if test -z "$integration_branch"; and test -n "$_wclean_config_default_upstream"
-        set integration_branch $_wclean_config_default_upstream
+    # Integration branch: config override wins; otherwise origin/HEAD. Empty
+    # is tolerated: the classifier then skips the merged check.
+    set -l integration_branch $_wclean_config_default_upstream
+    if test -z "$integration_branch"
+        set integration_branch (git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+            | string replace 'refs/remotes/' '')
     end
 
     # Enumerate registered worktrees (skip the bare repo entry); collect
