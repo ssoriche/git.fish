@@ -54,9 +54,6 @@ function _wclean_normal_cleanup
 
     # Clean up global variables
     set -e _wclean_worktrees_dir
-    set -e _wclean_head_commit
-    set -e _wclean_current_branch
-    set -e _wclean_upstream_branch
     set -e _wclean_main_repo
     set -e _wclean_remotes
     set -e _wclean_default_branch
