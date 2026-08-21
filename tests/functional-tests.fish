@@ -1697,7 +1697,7 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     rm -f "$stub_dir/gh-called.log"
     set -l line (_git_worktree_status --no-forge "$wts_dir/pr" origin/main 30)
     set -l state (string split \t -- $line)[1]
-    if test "$state" != pr-closed; and not test -f "$stub_dir/gh-called.log"
+    if test "$state" = active; and not test -f "$stub_dir/gh-called.log"
         echo "✅ --no-forge skipped gh (state='$state')"
     else
         echo "❌ state='$state', gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)
@@ -1706,14 +1706,15 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
 
     echo "Test 3: gh says OPEN -> falls through (active)..."
     set total_tests (math $total_tests + 1)
-    printf '#!/bin/sh\necho OPEN\n' >"$stub_dir/gh"
+    rm -f "$stub_dir/gh-called.log"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\necho OPEN\n' "$stub_dir" >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
     set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
     set -l state (string split \t -- $line)[1]
-    if test "$state" = active
+    if test "$state" = active; and test -f "$stub_dir/gh-called.log"
         echo "✅ OPEN PR leaves worktree active"
     else
-        echo "❌ got '$state', want active"
+        echo "❌ got '$state', want active (gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)")"
         set failed_tests (math $failed_tests + 1)
     end
 
@@ -1725,7 +1726,7 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     rm -f "$stub_dir/gh-called.log"
     set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
     set -l state (string split \t -- $line)[1]
-    if test "$state" != pr-closed; and not test -f "$stub_dir/gh-called.log"
+    if test "$state" = active; and not test -f "$stub_dir/gh-called.log"
         echo "✅ non-github remote never calls gh (state='$state')"
     else
         echo "❌ state='$state', gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)
