@@ -22,6 +22,13 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     #   'error	-	-	-	-	<path>' and returns 1. Callers must treat
     #   'error' as keep-and-report, never as a removal candidate.
     #
+    # EXAMPLES
+    #   # Classify one worktree against origin/main with a 30-day stale window
+    #   _git_worktree_status ~/src/repo/feature-x origin/main 30 main master
+    #
+    #   # Hook-safe classification: never invoke gh (no pr-closed state)
+    #   _git_worktree_status --no-forge ~/src/repo/feature-x origin/main 30
+    #
     # NOTES
     #   - Performs no fetch and reads no config: callers run
     #     'git fetch --prune origin' first and pass everything explicitly.

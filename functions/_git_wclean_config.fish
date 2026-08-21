@@ -20,6 +20,16 @@ function _git_wclean_config --description "Load git-wclean config: defaults, the
     #   --allow-local   Include ./.git-wclean-config as the last-resort fallback
     #   --quiet         Suppress the "Loading configuration from" stderr message
     #
+    # EXAMPLES
+    #   # Load defaults + user-level config (read-only callers like git-wlist)
+    #   _git_wclean_config
+    #
+    #   # Hook-driven caller: no repo-local config, no loading message
+    #   _git_wclean_config --quiet
+    #
+    #   # Explicit full git-wclean run: repo-local config may participate
+    #   _git_wclean_config --allow-local
+    #
     # EXIT STATUS
     #   0    Success (a missing config file is not an error)
     #   1    Usage error (unknown flag)

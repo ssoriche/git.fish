@@ -48,7 +48,7 @@ reapable.
 
 **Contract:**
 
-```
+```text
 _git_worktree_status [--no-forge] <worktree-path> <integration-branch> <stale-days> [protected-branch ...]
 ```
 
@@ -81,7 +81,7 @@ first-match-wins search, with two deliberate changes:
 
 On success, prints exactly one tab-separated line to stdout and returns 0:
 
-```
+```text
 <state>\t<branch>\t<upstream>\t<dirty>\t<age-days>\t<path>
 ```
 
@@ -142,7 +142,7 @@ refs, so a network failure cannot fabricate a `gone` state.
 
 ### `git-wlist` (new)
 
-```
+```text
 git wlist [-h|--help] [-s|--stale-days N]
 ```
 
@@ -161,7 +161,7 @@ Sort order: by state, in the fixed order `merged`, `pr-closed`, `gone`,
 state. NAME is the basename of the worktree path. An `error`-state worktree
 renders with `-` in the BRANCH/DIRTY/AGE columns.
 
-```
+```text
 NAME          BRANCH        STATE      DIRTY  AGE
 pr-1423       pr-1423       pr-closed  clean  12d
 fix-auth      fix-auth      gone       clean  8d
@@ -248,7 +248,7 @@ hook must not stall or garble the greeting. `--check` also never triggers a
 directory change, so user PWD hooks (zoxide, direnv) cannot fire or print
 during the greeting.
 
-```
+```text
 git-wclean: 2 reapable (1 merged, 1 gone), 1 stale — run 'git wclean'
 ```
 
