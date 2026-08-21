@@ -1435,6 +1435,187 @@ function test_git_wclean_config_helper --description "Test _git_wclean_config de
     return $failed_tests
 end
 
+function test_git_worktree_status_classifier --description "Test _git_worktree_status core state classification"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing _git_worktree_status classifier..."
+
+    set -p fish_function_path $test_functions_dir
+    if not test -f "$test_functions_dir/_git_worktree_status.fish"
+        echo "❌ _git_worktree_status.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/_git_worktree_status.fish
+
+    # Fixture: bare remote + main clone + worktrees, one per scenario
+    set -l remote_dir /tmp/git-fish-wts-remote-(random).git
+    set -l main_dir /tmp/git-fish-wts-main-(random)
+    set -l wts_dir /tmp/git-fish-wts-wts-(random)
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    mkdir -p "$wts_dir"
+
+    # merged: branch at main's HEAD (ancestor of origin/main)
+    git -C "$main_dir" worktree add "$wts_dir/merged" -b wts-merged >/dev/null 2>&1
+
+    # gone: branch pushed with upstream, then deleted on the remote and pruned
+    git -C "$main_dir" worktree add "$wts_dir/gone" -b wts-gone >/dev/null 2>&1
+    echo change >"$wts_dir/gone/gone.txt"
+    git -C "$wts_dir/gone" add gone.txt
+    git -C "$wts_dir/gone" commit -m "gone work" >/dev/null 2>&1
+    git -C "$wts_dir/gone" push -u origin wts-gone >/dev/null 2>&1
+    git -C "$main_dir" push origin --delete wts-gone >/dev/null 2>&1
+    git -C "$main_dir" fetch --prune origin >/dev/null 2>&1
+
+    # stale: unmerged, no upstream, backdated commit
+    git -C "$main_dir" worktree add "$wts_dir/stale" -b wts-stale >/dev/null 2>&1
+    echo old >"$wts_dir/stale/old.txt"
+    git -C "$wts_dir/stale" add old.txt
+    env GIT_COMMITTER_DATE="2020-01-01T00:00:00" GIT_AUTHOR_DATE="2020-01-01T00:00:00" \
+        git -C "$wts_dir/stale" commit -m "old work" >/dev/null 2>&1
+
+    # dirty + active: unmerged recent commit plus an uncommitted file
+    git -C "$main_dir" worktree add "$wts_dir/dirty" -b wts-dirty >/dev/null 2>&1
+    echo work >"$wts_dir/dirty/work.txt"
+    git -C "$wts_dir/dirty" add work.txt
+    git -C "$wts_dir/dirty" commit -m "recent work" >/dev/null 2>&1
+    echo uncommitted >"$wts_dir/dirty/uncommitted.txt"
+
+    # detached HEAD
+    set -l main_sha (git -C "$main_dir" rev-parse HEAD)
+    git -C "$main_dir" worktree add --detach "$wts_dir/detached" $main_sha >/dev/null 2>&1
+
+    # active: unmerged recent commit, clean
+    git -C "$main_dir" worktree add "$wts_dir/active" -b wts-active >/dev/null 2>&1
+    echo a >"$wts_dir/active/a.txt"
+    git -C "$wts_dir/active" add a.txt
+    git -C "$wts_dir/active" commit -m "active work" >/dev/null 2>&1
+
+    # Helper: classify and return the requested TSV field (1=state 4=dirty 5=age)
+    function _wts_field
+        set -l line (_git_worktree_status $argv[2..-1])
+        string split \t -- $line | sed -n "$argv[1]p"
+    end
+
+    echo "Test 1: merged..."
+    set total_tests (math $total_tests + 1)
+    set -l state (_wts_field 1 "$wts_dir/merged" origin/main 30)
+    if test "$state" = merged
+        echo "✅ merged"
+    else
+        echo "❌ got '$state', want merged"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: gone..."
+    set total_tests (math $total_tests + 1)
+    set -l state (_wts_field 1 "$wts_dir/gone" origin/main 30)
+    if test "$state" = gone
+        echo "✅ gone"
+    else
+        echo "❌ got '$state', want gone"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 3: stale..."
+    set total_tests (math $total_tests + 1)
+    set -l state (_wts_field 1 "$wts_dir/stale" origin/main 30)
+    if test "$state" = stale
+        echo "✅ stale"
+    else
+        echo "❌ got '$state', want stale"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: dirty flag on an active worktree..."
+    set total_tests (math $total_tests + 1)
+    set -l state (_wts_field 1 "$wts_dir/dirty" origin/main 30)
+    set -l dirty (_wts_field 4 "$wts_dir/dirty" origin/main 30)
+    if test "$state" = active; and test "$dirty" = dirty
+        echo "✅ active + dirty"
+    else
+        echo "❌ got state='$state' dirty='$dirty', want active/dirty"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 5: detached..."
+    set total_tests (math $total_tests + 1)
+    set -l state (_wts_field 1 "$wts_dir/detached" origin/main 30)
+    if test "$state" = detached
+        echo "✅ detached"
+    else
+        echo "❌ got '$state', want detached"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 6: protected wins over merged..."
+    set total_tests (math $total_tests + 1)
+    set -l state (_wts_field 1 "$wts_dir/merged" origin/main 30 wts-merged)
+    if test "$state" = protected
+        echo "✅ protected takes precedence"
+    else
+        echo "❌ got '$state', want protected"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 7: error on non-worktree path, exit 1..."
+    set total_tests (math $total_tests + 1)
+    set -l line (_git_worktree_status /nonexistent-(random) origin/main 30)
+    set -l st $status
+    if test $st -eq 1; and string match -q 'error	*' -- $line
+        echo "✅ error line + return 1"
+    else
+        echo "❌ status=$st line='$line'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 8: active worktree, clean..."
+    set total_tests (math $total_tests + 1)
+    set -l state (_wts_field 1 "$wts_dir/active" origin/main 30)
+    set -l dirty (_wts_field 4 "$wts_dir/active" origin/main 30)
+    if test "$state" = active; and test "$dirty" = clean
+        echo "✅ active + clean"
+    else
+        echo "❌ got state='$state' dirty='$dirty'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 9: empty integration branch skips merged, still classifies gone..."
+    set total_tests (math $total_tests + 1)
+    set -l state (_wts_field 1 "$wts_dir/gone" "" 30)
+    if test "$state" = gone
+        echo "✅ gone without an integration branch"
+    else
+        echo "❌ got '$state', want gone"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Cleanup
+    functions -e _wts_field
+    git -C "$main_dir" worktree prune >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+
+    echo "📊 _git_worktree_status results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -1532,6 +1713,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_config_helper
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_worktree_status_classifier
     set total_failed (math $total_failed + $status)
 
     echo ""
