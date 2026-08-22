@@ -2018,7 +2018,7 @@ and to the example config block:
     #   set -g _wclean_config_stale_days 30
 ```
 
-4. EXIT STATUS — add:
+Finally, in the EXIT STATUS section, add:
 
 ```fish
     #   Under --check, runtime conditions (not a repo, fetch failure) always
