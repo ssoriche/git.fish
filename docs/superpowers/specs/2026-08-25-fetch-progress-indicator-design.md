@@ -102,7 +102,8 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   `pgrep` is somehow unavailable, kill `$last_pid` alone and accept the
   orphaned fetch (it self-terminates).
 - Return codes: **0** fetch succeeded, **1** invalid arguments, **2** fetch
-  failed (or `mktemp` failure), **124** timed out. Callers keep ownership of
+  failed (or `mktemp` failure, or empty/missing status file), **124** timed
+  out. Callers keep ownership of
   user-facing success/warning lines — the helper draws only the in-progress
   indicator.
 - Cleans up its scratch file on every path. Sets no globals. Does not check
@@ -172,8 +173,10 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     gone-branch ref is *not* pruned when `timeout`/`gtimeout` are absent —
     inverted by the always-fetch design. Its PATH shim (only `git`, `date`,
     `basename`) also lacks the helper's dependencies (`sh`, `mktemp`,
-    `sleep`, `pgrep`), so left alone it could keep passing accidentally
-    through the helper's mktemp-failure path. Rewrite it to assert the new behavior (fetch runs,
+    `sleep`, `pgrep`, `rm` — fish has no builtin `rm`; the status file should
+    be read with fish's builtin `read < file`, not `cat`, to avoid one more
+    dependency), so left alone it could keep passing accidentally through the
+    helper's mktemp-failure path. Rewrite it to assert the new behavior (fetch runs,
     bounded) with a shim PATH that includes the helper's dependencies.
   - Test 5 (~line 2334) and the Test 3 comment (~lines 2284-2287) rely on
     the skipped fetch for network isolation — Test 5 points origin at a real
