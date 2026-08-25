@@ -50,12 +50,23 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   single external command:
 
   ```fish
-  sh -c 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1; echo $? >"$STATUS_FILE"' -- $fetch_args &
+  sh -c 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1; echo $? >"$0"' \
+      $status_file $fetch_args 2>/dev/null &
   ```
 
-  The scratch `$STATUS_FILE` (from `mktemp`) carries the fetch's exit status,
-  since fish's `wait` does not propagate job status. `$last_pid` is the `sh`
-  wrapper's pid; the `git fetch` process is its *child*.
+  The scratch status file (from `mktemp`) carries the fetch's exit status,
+  since fish's `wait` does not propagate job status. It is passed as the
+  sh script's `$0` positional — fish locals are not exported, so referencing
+  a `$STATUS_FILE` variable inside the single-quoted script would silently
+  expand to empty and lose the status. The outer `2>/dev/null` matters too:
+  it silences the wrapper's own job notice
+  (`Terminated: 15  git fetch …`) that `sh` otherwise prints to the
+  inherited stderr when its child is killed on the timeout path.
+  `$last_pid` is the `sh` wrapper's pid; the `git fetch` process is its
+  *child*.
+- When the job ends before timeout, the helper reads the status file:
+  `0` → return 0; anything else, including an empty or missing file (the
+  exact symptom of a wrapper plumbing bug) → return 2.
 - `GIT_TERMINAL_PROMPT=0` applies at every call site (today only `--check`
   sets it). This is an intended behavior change: a fetch that would have
   prompted for credentials now fails and the caller warns — a background job
@@ -73,12 +84,16 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     animation (clean CI logs and pipes).
   - **`--quiet`:** no output at all (for the `--check` prompt hook).
 - When elapsed ≥ timeout: kill the *git child* — the pids from
-  `pgrep -P $last_pid` (`pgrep` is base on both macOS and Linux) — and return
-  **124** regardless of what lands in the status file (matches coreutils
-  `timeout`, which callers already test for). The `sh` wrapper then exits on
-  its own after writing git's signal status, which avoids fish's
-  "Job N terminated" notice that SIGTERM-ing the job itself would print in an
-  interactive shell. Killing only `$last_pid` would instead orphan the
+  `pgrep -P $last_pid` (`pgrep` is in the base system on macOS and ships in
+  procps on Linux; it can be absent in minimal containers, which the fallback
+  below covers) — and return **124** regardless of what lands in the status
+  file (matches coreutils `timeout`, which callers already test for). The
+  `sh` wrapper then exits on its own after writing git's signal status, which
+  avoids fish's "Job N terminated" notice that SIGTERM-ing the job itself
+  would print in an interactive shell. Before removing the scratch file, the
+  timeout path briefly waits for the wrapper to exit (bounded — it dies as
+  soon as git does); deleting the file first would let the wrapper's trailing
+  `echo` recreate it and leak it in `$TMPDIR`. Killing only `$last_pid` would instead orphan the
   still-running `git fetch` — unacceptable for `git-wclean`, which goes on to
   delete branches while that fetch mutates refs. A process-group kill
   (`kill -- -$last_pid`) is not an option: background jobs only get their own
@@ -156,9 +171,9 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   - Test 4 (~line 2302, "no timeout utility → fetch skipped") asserts the
     gone-branch ref is *not* pruned when `timeout`/`gtimeout` are absent —
     inverted by the always-fetch design. Its PATH shim (only `git`, `date`,
-    `basename`) also lacks `mktemp`, `sleep`, `env`, `sh`, and `pgrep`, so
-    left alone it could keep passing accidentally through the helper's
-    mktemp-failure path. Rewrite it to assert the new behavior (fetch runs,
+    `basename`) also lacks the helper's dependencies (`sh`, `mktemp`,
+    `sleep`, `pgrep`), so left alone it could keep passing accidentally
+    through the helper's mktemp-failure path. Rewrite it to assert the new behavior (fetch runs,
     bounded) with a shim PATH that includes the helper's dependencies.
   - Test 5 (~line 2334) and the Test 3 comment (~lines 2284-2287) rely on
     the skipped fetch for network isolation — Test 5 points origin at a real
