@@ -44,11 +44,22 @@ New file `functions/_git_fetch_progress.fish`:
 _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args…>
 ```
 
-- Runs `env GIT_TERMINAL_PROMPT=0 git fetch <args> >/dev/null 2>&1` as a fish
-  background job (`begin …; end &`), capturing the fetch's exit status via a
-  scratch file from `mktemp` (fish's `wait` does not propagate job status).
-  The wrapper-job pid comes from `$last_pid`; note the `git fetch` process is
-  a *child* of that pid.
+- Runs the fetch as a backgrounded external wrapper command — fish cannot
+  background a `begin … end` block or a function (verified on fish 4.7.1:
+  they run synchronously and `$last_pid` stays empty), so the job must be a
+  single external command:
+
+  ```fish
+  sh -c 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1; echo $? >"$STATUS_FILE"' -- $fetch_args &
+  ```
+
+  The scratch `$STATUS_FILE` (from `mktemp`) carries the fetch's exit status,
+  since fish's `wait` does not propagate job status. `$last_pid` is the `sh`
+  wrapper's pid; the `git fetch` process is its *child*.
+- `GIT_TERMINAL_PROMPT=0` applies at every call site (today only `--check`
+  sets it). This is an intended behavior change: a fetch that would have
+  prompted for credentials now fails and the caller warns — a background job
+  can't take a prompt anyway.
 - All indicator output goes to **stderr** (git's own convention for progress),
   so piped stdout — notably `git wlist | …` — never gains a progress line.
   TTY detection is therefore `isatty stderr`.
@@ -61,12 +72,15 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   - **non-TTY + not quiet:** prints `<label>…` once before starting; no
     animation (clean CI logs and pipes).
   - **`--quiet`:** no output at all (for the `--check` prompt hook).
-- When elapsed ≥ timeout: kill the fetch's process tree — `kill` the pids
-  from `pgrep -P $last_pid` (base on both macOS and Linux) plus `$last_pid`
-  itself, then return **124** (matches coreutils `timeout`, which callers
-  already test for). Killing only `$last_pid` would orphan the still-running
-  `git fetch` — unacceptable for `git-wclean`, which goes on to delete
-  branches while that fetch mutates refs. A process-group kill
+- When elapsed ≥ timeout: kill the *git child* — the pids from
+  `pgrep -P $last_pid` (`pgrep` is base on both macOS and Linux) — and return
+  **124** regardless of what lands in the status file (matches coreutils
+  `timeout`, which callers already test for). The `sh` wrapper then exits on
+  its own after writing git's signal status, which avoids fish's
+  "Job N terminated" notice that SIGTERM-ing the job itself would print in an
+  interactive shell. Killing only `$last_pid` would instead orphan the
+  still-running `git fetch` — unacceptable for `git-wclean`, which goes on to
+  delete branches while that fetch mutates refs. A process-group kill
   (`kill -- -$last_pid`) is not an option: background jobs only get their own
   pgroup in interactive fish; non-interactively (tests, CI, scripts) they
   share the caller's pgroup and a group kill would take out the harness. If
@@ -84,16 +98,19 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
 
 1. **`_wclean_fetch_remotes`** (`git-wclean.fish`): the whole
    `timeout_cmd` block collapses to one helper call with
+   `--label "Fetching from origin"` and
    `--timeout $_wclean_config_fetch_timeout`; the existing
    `✓ Fetched from origin` / timed-out / failed warnings key off the return
    status unchanged.
 2. **`_wclean_run_check`** (`git-wclean.fish`): calls the helper with
-   `--quiet`, keeping its existing `contains origin (git remote)` guard.
+   `--quiet` (a label is still passed but never drawn), keeping its existing
+   `contains origin (git remote)` guard.
    Behavior improvement: `--check` previously skipped the fetch when no
    timeout utility existed; the native timeout means it now always fetches,
    still bounded and still silent. `GIT_TERMINAL_PROMPT=0` moves into the
    helper.
 3. **`git-wlist`**: inline fetch block becomes one helper call with
+   `--label "Fetching from origin"` and
    `--timeout $_wclean_config_fetch_timeout` (already loaded there). The
    comment explaining why it was kept inline ("wclean's helper prints
    progress and sets wclean globals") is obsolete and goes away.
@@ -128,10 +145,26 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     positional args, which the inner `sh -c` ignores, so the transport
     genuinely hangs — a bare `sleep 60` would reject the extra operands and
     fail fast instead) via the helper with `--timeout 1` → status 124,
-    returns promptly, and the sleeping process tree is gone afterwards.
+    returns promptly, and the fetch's direct child (`pgrep -P` target) is
+    gone afterwards (`pgrep -P` kills one level deep; git's own SIGTERM
+    handling is trusted to reap its transport grandchildren).
   - quiet: `--quiet` produces no output on any path.
   - stream separation: non-TTY label line lands on stderr; stdout stays
     empty.
+- **Rework of existing `--check` tests that assert the removed behavior**
+  (`tests/functional-tests.fish`):
+  - Test 4 (~line 2302, "no timeout utility → fetch skipped") asserts the
+    gone-branch ref is *not* pruned when `timeout`/`gtimeout` are absent —
+    inverted by the always-fetch design. Its PATH shim (only `git`, `date`,
+    `basename`) also lacks `mktemp`, `sleep`, `env`, `sh`, and `pgrep`, so
+    left alone it could keep passing accidentally through the helper's
+    mktemp-failure path. Rewrite it to assert the new behavior (fetch runs,
+    bounded) with a shim PATH that includes the helper's dependencies.
+  - Test 5 (~line 2334) and the Test 3 comment (~lines 2284-2287) rely on
+    the skipped fetch for network isolation — Test 5 points origin at a real
+    `https://github.com/...` URL. With the fetch now always live, repoint
+    origin at a local `file://` path (or unreachable local address plus a
+    short configured timeout) so CI never touches the network.
 
 ## Documentation
 
