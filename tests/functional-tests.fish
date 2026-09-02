@@ -468,12 +468,14 @@ function test_git_wrm_pr_merged --description "Test git-wrm consults gh for squa
     git -C "$main_dir" commit -m "Squash merge of feature (#42)" >/dev/null 2>&1
     git -C "$main_dir" push origin main >/dev/null 2>&1
 
-    # gh stub: logs every invocation and answers with the state in $stub_dir/state
+    # gh stub: logs every invocation and answers with the state in
+    # $stub_dir/state and the PR head SHA in $stub_dir/sha
     set -l stub_dir /tmp/git-fish-wrmpr-bin-(random)
     mkdir -p "$stub_dir"
-    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "%%s\\t42\\n" "$(cat "%s/state")"\n' \
-        "$stub_dir" "$stub_dir" >"$stub_dir/gh"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "%%s\\t42\\t%%s\\n" "$(cat "%s/state")" "$(cat "%s/sha")"\n' \
+        "$stub_dir" "$stub_dir" "$stub_dir" >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
+    git -C "$feature_wt" rev-parse HEAD >"$stub_dir/sha"
     set -l orig_path $PATH
     set -lx PATH $stub_dir $PATH
 
@@ -531,9 +533,28 @@ function test_git_wrm_pr_merged --description "Test git-wrm consults gh for squa
         set failed_tests (math $failed_tests + 1)
     end
 
-    echo "Test 5: MERGED PR removes the worktree and its local branch..."
+    echo "Test 5: MERGED PR whose head is not this HEAD (reused branch) is refused..."
+    set total_tests (math $total_tests + 1)
+    # New work on the same branch name after the old PR merged: gh still
+    # reports the OLD PR as MERGED, but its head SHA no longer covers HEAD.
+    echo "new work" >"$feature_wt/again.txt"
+    git -C "$feature_wt" add again.txt
+    git -C "$feature_wt" commit -m "Reused branch, unmerged work" >/dev/null 2>&1
+    echo MERGED >"$stub_dir/state"
+    set -l out (git-wrm "$feature_wt" 2>&1)
+    set -l st $status
+    if test $st -eq 3; and test -d "$feature_wt"; and string match -q '*does not cover*' "$out"
+        echo "✅ reused branch: MERGED PR for an older head refused (exit 3)"
+    else
+        echo "❌ exit=$st, dir exists: "(test -d "$feature_wt"; and echo yes; or echo no)
+        printf '%s\n' $out
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 6: MERGED PR covering HEAD removes the worktree and its local branch..."
     set total_tests (math $total_tests + 1)
     echo MERGED >"$stub_dir/state"
+    git -C "$feature_wt" rev-parse HEAD >"$stub_dir/sha"
     set -l out (git-wrm "$feature_wt" 2>&1)
     set -l st $status
     set -l branch_left (git -C "$main_dir" branch --list feature)
@@ -1892,10 +1913,13 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     # It never fetches, so rewriting the URL after all pushes is safe.
     git -C "$main_dir" remote set-url origin https://github.com/example/repo.git
 
-    # gh stub: logs every invocation, answers MERGED
+    # gh stub: logs every invocation, answers MERGED with the PR head SHA
+    # (the helper's third field) equal to the worktree HEAD
     set -l stub_dir /tmp/git-fish-prc-bin-(random)
     mkdir -p "$stub_dir"
-    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\necho MERGED\n' "$stub_dir" >"$stub_dir/gh"
+    set -l pr_head (git -C "$wts_dir/pr" rev-parse HEAD)
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\n"\n' \
+        "$stub_dir" $pr_head >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
     set -l orig_path $PATH
     set -lx PATH $stub_dir $PATH
@@ -1926,7 +1950,8 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     echo "Test 3: gh says OPEN -> falls through (active)..."
     set total_tests (math $total_tests + 1)
     rm -f "$stub_dir/gh-called.log"
-    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\necho OPEN\n' "$stub_dir" >"$stub_dir/gh"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "OPEN\\t7\\t%s\\n"\n' \
+        "$stub_dir" $pr_head >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
     set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
     set -l state (string split \t -- $line)[1]
@@ -1937,10 +1962,29 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
         set failed_tests (math $failed_tests + 1)
     end
 
-    echo "Test 4: non-github remote skips gh entirely..."
+    echo "Test 4: MERGED PR whose head is not this HEAD (reused branch) -> active..."
+    set total_tests (math $total_tests + 1)
+    rm -f "$stub_dir/gh-called.log"
+    # Reused branch name: gh reports the OLD PR as MERGED, but its head is the
+    # initial commit, which does not cover the worktree's HEAD.
+    set -l old_head (git -C "$main_dir" rev-parse origin/main)
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\n"\n' \
+        "$stub_dir" $old_head >"$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
+    set -l state (string split \t -- $line)[1]
+    if test "$state" = active; and test -f "$stub_dir/gh-called.log"
+        echo "✅ stale PR head leaves worktree active"
+    else
+        echo "❌ got '$state', want active (gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)")"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 5: non-github remote skips gh entirely..."
     set total_tests (math $total_tests + 1)
     git -C "$main_dir" remote set-url origin https://forgejo.example.com/example/repo.git
-    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\necho MERGED\n' "$stub_dir" >"$stub_dir/gh"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\n"\n' \
+        "$stub_dir" $pr_head >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
     rm -f "$stub_dir/gh-called.log"
     set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
