@@ -72,6 +72,10 @@ source functions/git-wadd.fish
 - `_git_worktree_status`: Single source of truth for classifying a worktree's
   lifecycle state (merged/gone/pr-closed/stale/active/detached/protected/error);
   used by both `git-wlist` and `git-wclean`
+- `_git_branch_pr_state`: Single source of truth for the `gh pr view` lookup
+  (gh present, github.com remote, cwd handling); prints `<state>\t<number>` or
+  nothing. Used by `_git_worktree_status` (pr-closed) and `git-wrm` (accepting
+  squash/rebase-merged branches whose PR is MERGED; `--no-forge` skips it)
 - `_git_wclean_config`: Shared config loader for `git-wclean`, `git-wlist`, and
   `git wclean --check`
   (defaults, `~/.config/git-wclean/config`, `~/.git-wclean-config`, and,
