@@ -266,11 +266,19 @@ git wrm --force ~/worktrees/experimental
 
 # Remove worktree but keep the local branch
 git wrm --no-delete-branch ~/worktrees/feature-branch
+
+# Skip the GitHub PR lookup (offline, or gh is slow)
+git wrm --no-forge ~/worktrees/feature-branch
 ```
 
 **Features:**
 
 - Verifies commits are merged to upstream before removal
+- Recognizes squash- and rebase-merged branches: when the commits are not
+  ancestors of `origin/HEAD` but the remote is on github.com and `gh` is
+  installed, a branch whose PR is `MERGED` is treated as merged (the same rule
+  behind the `pr-closed` state in `git wlist`). A PR that was closed without
+  merging is still refused. `--no-forge` disables the lookup.
 - Smart upstream branch detection
 - Force option for override (with warnings)
 - **Automatically deletes associated local branch** (unless `--no-delete-branch` is used)

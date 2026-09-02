@@ -20,12 +20,18 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #      run 'git remote set-head origin --auto' to set it)
     #   3. Fetch the latest changes from the remote
     #   4. Check if the current HEAD commit is merged into the integration branch
-    #   5. Remove the worktree only if the commit has been merged
+    #   5. If it is not, and the remote is on github.com with 'gh' installed, ask
+    #      the forge: a branch whose pull request is MERGED counts as merged even
+    #      though squash/rebase merges leave its commits outside origin/HEAD
+    #      (the same rule 'git wlist' uses for its pr-closed state). A CLOSED
+    #      (unmerged) PR is still refused.
+    #   6. Remove the worktree only if the commit has been merged
     #
     # OPTIONS
     #   -n, --dry-run        Show what would be removed without actually removing anything
     #   -f, --force          Remove worktree even if commits are not merged upstream
     #   --no-delete-branch   Keep the local branch after removing worktree
+    #   --no-forge           Never consult gh; rely on commit ancestry alone
     #   -h, --help           Show this help message
     #
     # ARGUMENTS
@@ -49,6 +55,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   # Remove worktree but keep the local branch
     #   git-wrm --no-delete-branch ~/worktrees/feature-branch
     #
+    #   # Skip the GitHub PR lookup (offline, or gh is slow)
+    #   git-wrm --no-forge ~/worktrees/feature-branch
+    #
     #   # In a .bare layout, <worktree-path> is a name, not a path: pass the
     #   # worktree's name as it appears alongside .bare/, e.g.
     #   git-wrm feature-branch
@@ -63,7 +72,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   3    Commits not merged upstream (use --force to override)
 
     # Parse command line arguments
-    argparse --name=git-wrm h/help n/dry-run f/force no-delete-branch -- $argv
+    argparse --name=git-wrm h/help n/dry-run f/force no-delete-branch no-forge -- $argv
     or return 1
 
     # Show help if requested
@@ -242,6 +251,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     # branch; empty output means HEAD is fully merged. A rev-list error must
     # NOT be treated as "merged", or the safety check becomes a no-op.
     set -l commit_found false
+    set -l merged_how "commits are merged"
     set -l branch_commits (git rev-list $head_commit --not $upstream_branch 2>/dev/null)
     if test $status -ne 0
         printf "  ✗ Failed to check merge status against %s.\n" $upstream_branch >&2
@@ -250,6 +260,35 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         printf "  ✓ Commit is merged into %s.\n" $upstream_branch
     else
         printf "  ✗ Commit NOT merged into %s.\n" $upstream_branch
+    end
+
+    # Ancestry says "not merged", but a squash or rebase merge rewrites the
+    # commits, so ask the forge (same rule as the pr-closed state in
+    # git wlist / _git_worktree_status). Only a MERGED PR counts: a CLOSED PR
+    # means the work was abandoned, and removing it would lose that work.
+    set -l pr_closed_unmerged false
+    if test $commit_found = false; and not set -q _flag_no_forge
+        and test -n "$current_branch_name"; and test "$current_branch_name" != HEAD
+        set -l pr (_git_branch_pr_state "$worktree_path" "$current_branch_name" "$remote_name")
+        if test -n "$pr"
+            set -l pr_fields (string split \t -- $pr)
+            set -l pr_state $pr_fields[1]
+            set -l pr_label PR
+            test -n "$pr_fields[2]"; and set pr_label "PR #$pr_fields[2]"
+            switch $pr_state
+                case MERGED
+                    set commit_found true
+                    set merged_how "$pr_label merged on GitHub"
+                    printf "  ✓ %s for branch '%s' is merged on GitHub (squash/rebase merge).\n" \
+                        $pr_label $current_branch_name
+                case CLOSED
+                    set pr_closed_unmerged true
+                    printf "  ✗ %s for branch '%s' was closed without merging.\n" \
+                        $pr_label $current_branch_name
+                case '*'
+                    printf "  ✗ %s for branch '%s' is %s.\n" $pr_label $current_branch_name $pr_state
+            end
+        end
     end
 
     popd >/dev/null
@@ -265,7 +304,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
 
         if set -q _flag_dry_run
             if test $commit_found = true
-                printf "\nWould remove worktree '%s' (commits are merged).\n" $worktree_name
+                printf "\nWould remove worktree '%s' (%s).\n" $worktree_name $merged_how
             else
                 printf "\nWould FORCE remove worktree '%s' (commits NOT merged - forced).\n" $worktree_name
             end
@@ -297,7 +336,12 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
                         if git branch -d "$current_branch_name" >/dev/null 2>&1
                             printf "✓ Successfully deleted local branch: %s\n" $current_branch_name
                         else if git branch -D "$current_branch_name" >/dev/null 2>&1
-                            printf "✓ Force deleted local branch: %s (had unmerged changes)\n" $current_branch_name
+                            # -d refuses squash/rebase-merged branches; say why -D was needed
+                            if test $commit_found = true
+                                printf "✓ Deleted local branch: %s (%s)\n" $current_branch_name $merged_how
+                            else
+                                printf "✓ Force deleted local branch: %s (had unmerged changes)\n" $current_branch_name
+                            end
                         else
                             printf "Warning: Failed to delete local branch '%s'. You may need to delete it manually.\n" $current_branch_name >&2
                         end
@@ -318,7 +362,11 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             end
         end
     else
-        printf "\nRefusing to remove worktree: commits are not merged upstream.\n"
+        if test $pr_closed_unmerged = true
+            printf "\nRefusing to remove worktree: its PR was closed without merging.\n"
+        else
+            printf "\nRefusing to remove worktree: commits are not merged upstream.\n"
+        end
         printf "Options:\n"
         printf "  1. Merge your changes to %s first\n" $upstream_branch
         printf "  2. Use --force to remove anyway (DANGER: will lose unmerged work)\n"

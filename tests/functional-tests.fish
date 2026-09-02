@@ -347,7 +347,7 @@ function test_git_wrm_merge_check --description "Test git-wrm only removes workt
     git -C "$main_dir" config user.name "Test User"
     git -C "$main_dir" config user.email "test@example.com"
     git -C "$main_dir" config commit.gpgsign false
-    echo "# Test" > "$main_dir/README.md"
+    echo "# Test" >"$main_dir/README.md"
     git -C "$main_dir" add README.md
     git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
     git -C "$main_dir" push -u origin main >/dev/null 2>&1
@@ -359,7 +359,7 @@ function test_git_wrm_merge_check --description "Test git-wrm only removes workt
     set -l feature_wt /tmp/git-fish-wrm-feature-(random)
     rm -rf "$feature_wt"
     git -C "$main_dir" worktree add -b feature "$feature_wt" >/dev/null 2>&1
-    echo "feature work" > "$feature_wt/feature.txt"
+    echo "feature work" >"$feature_wt/feature.txt"
     git -C "$feature_wt" add feature.txt
     git -C "$feature_wt" commit -m "Unmerged feature work" >/dev/null 2>&1
     git -C "$feature_wt" push -u origin feature >/dev/null 2>&1
@@ -414,6 +414,146 @@ function test_git_wrm_merge_check --description "Test git-wrm only removes workt
     return $failed_tests
 end
 
+function test_git_wrm_pr_merged --description "Test git-wrm consults gh for squash-merged PRs like the classifier does"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wrm forge (gh) merge check..."
+
+    set -p fish_function_path $test_functions_dir
+    if not test -f "$test_functions_dir/git-wrm.fish"
+        echo "❌ git-wrm.fish not found in: $test_functions_dir"
+        return 1
+    end
+    source $test_functions_dir/git-wrm.fish
+
+    # The forge gate opens when the remote URL contains 'github.com'. A LOCAL
+    # bare remote whose path contains that string satisfies the gate while
+    # keeping git-wrm's fetch offline (a real github.com URL would prompt for
+    # credentials or hit the network).
+    set -l remote_root /tmp/git-fish-wrmpr-github.com-(random)
+    set -l remote_dir "$remote_root/repo.git"
+    set -l main_dir /tmp/git-fish-wrmpr-main-(random)
+    set -l feature_wt /tmp/git-fish-wrmpr-feature-(random)
+    rm -rf "$remote_root" "$main_dir" "$feature_wt"
+    mkdir -p "$remote_root"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+
+    # Feature branch, then SQUASH-merge it into main: the feature commit is
+    # never an ancestor of origin/main, so the ancestry check alone says
+    # "not merged" even though the work landed.
+    git -C "$main_dir" worktree add -b feature "$feature_wt" >/dev/null 2>&1
+    echo "feature work" >"$feature_wt/feature.txt"
+    git -C "$feature_wt" add feature.txt
+    git -C "$feature_wt" commit -m "Squash-merged feature work" >/dev/null 2>&1
+    git -C "$feature_wt" push -u origin feature >/dev/null 2>&1
+    git -C "$main_dir" merge --squash feature >/dev/null 2>&1
+    git -C "$main_dir" commit -m "Squash merge of feature (#42)" >/dev/null 2>&1
+    git -C "$main_dir" push origin main >/dev/null 2>&1
+
+    # gh stub: logs every invocation and answers with the state in $stub_dir/state
+    set -l stub_dir /tmp/git-fish-wrmpr-bin-(random)
+    mkdir -p "$stub_dir"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "%%s\\t42\\n" "$(cat "%s/state")"\n' \
+        "$stub_dir" "$stub_dir" >"$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    set -l orig_path $PATH
+    set -lx PATH $stub_dir $PATH
+
+    echo "Test 1: dry-run treats a MERGED PR as merged..."
+    set total_tests (math $total_tests + 1)
+    echo MERGED >"$stub_dir/state"
+    rm -f "$stub_dir/gh-called.log"
+    set -l out (git-wrm --dry-run "$feature_wt" 2>&1)
+    set -l st $status
+    if test $st -eq 0; and string match -q '*Would remove*' "$out"
+        and string match -q '*PR #42*' "$out"; and test -f "$stub_dir/gh-called.log"
+        echo "✅ MERGED PR: dry-run would remove (exit 0, mentions PR #42)"
+    else
+        echo "❌ exit=$st, gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)
+        printf '%s\n' $out
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: a CLOSED (unmerged) PR is still refused..."
+    set total_tests (math $total_tests + 1)
+    echo CLOSED >"$stub_dir/state"
+    rm -f "$stub_dir/gh-called.log"
+    set -l out (git-wrm "$feature_wt" 2>&1)
+    set -l st $status
+    if test $st -eq 3; and test -d "$feature_wt"; and string match -q '*closed without merging*' "$out"
+        echo "✅ CLOSED PR: refused with exit 3 and explanation"
+    else
+        echo "❌ exit=$st, dir exists: "(test -d "$feature_wt"; and echo yes; or echo no)
+        printf '%s\n' $out
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 3: an OPEN PR is refused..."
+    set total_tests (math $total_tests + 1)
+    echo OPEN >"$stub_dir/state"
+    set -l out (git-wrm "$feature_wt" 2>&1)
+    set -l st $status
+    if test $st -eq 3; and test -d "$feature_wt"
+        echo "✅ OPEN PR: refused with exit 3"
+    else
+        echo "❌ exit=$st, dir exists: "(test -d "$feature_wt"; and echo yes; or echo no)
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: --no-forge never invokes gh and refuses..."
+    set total_tests (math $total_tests + 1)
+    echo MERGED >"$stub_dir/state"
+    rm -f "$stub_dir/gh-called.log"
+    git-wrm --no-forge "$feature_wt" >/dev/null 2>&1
+    set -l st $status
+    if test $st -eq 3; and test -d "$feature_wt"; and not test -f "$stub_dir/gh-called.log"
+        echo "✅ --no-forge: gh skipped, refused with exit 3"
+    else
+        echo "❌ exit=$st, gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 5: MERGED PR removes the worktree and its local branch..."
+    set total_tests (math $total_tests + 1)
+    echo MERGED >"$stub_dir/state"
+    set -l out (git-wrm "$feature_wt" 2>&1)
+    set -l st $status
+    set -l branch_left (git -C "$main_dir" branch --list feature)
+    if test $st -eq 0; and not test -d "$feature_wt"; and test -z "$branch_left"
+        echo "✅ MERGED PR: worktree and local branch removed"
+    else
+        echo "❌ exit=$st, dir exists: "(test -d "$feature_wt"; and echo yes; or echo no)", branch left: '$branch_left'"
+        printf '%s\n' $out
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Cleanup
+    set -lx PATH $orig_path
+    git -C "$main_dir" worktree remove --force "$feature_wt" >/dev/null 2>&1
+    rm -rf "$remote_root" "$main_dir" "$feature_wt" "$stub_dir"
+
+    echo "📊 git-wrm forge merge check results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function test_git_wclean_dry_run --description "Test git-wclean honors --dry-run and removes merged worktrees"
     # Use environment variable or fall back to relative path
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
@@ -445,7 +585,7 @@ function test_git_wclean_dry_run --description "Test git-wclean honors --dry-run
     git -C "$main_dir" config user.name "Test User"
     git -C "$main_dir" config user.email "test@example.com"
     git -C "$main_dir" config commit.gpgsign false
-    echo "# Test" > "$main_dir/README.md"
+    echo "# Test" >"$main_dir/README.md"
     git -C "$main_dir" add README.md
     git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
     git -C "$main_dir" push -u origin main >/dev/null 2>&1
@@ -1979,8 +2119,7 @@ function test_git_wlist --description "Test git-wlist table output, sorting, and
     # override wins over origin/HEAD, wl-active reclassifies as merged.
     git -C "$wts_dir/wl-active" push origin wl-active:wl-alt >/dev/null 2>&1
     mkdir -p "$fake_home/.config/git-wclean"
-    printf 'set -g _wclean_config_default_upstream origin/wl-alt\n' \
-        >"$fake_home/.config/git-wclean/config"
+    printf 'set -g _wclean_config_default_upstream origin/wl-alt\n' >"$fake_home/.config/git-wclean/config"
     set -l override_out (git-wlist 2>/dev/null | string collect)
     rm -f "$fake_home/.config/git-wclean/config"
     if string match -rq 'wl-active\s.*merged' -- $override_out
@@ -2159,7 +2298,7 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     echo s >"$wts_dir/stale-wt/s.txt"
     git -C "$wts_dir/stale-wt" add s.txt
     env GIT_COMMITTER_DATE="2020-01-01T00:00:00" GIT_AUTHOR_DATE="2020-01-01T00:00:00" \
-        git -C "$wts_dir/stale-wt" commit -m "old" >/dev/null 2>&1
+        git -C "$wts_dir/stale-wt" commit -m old >/dev/null 2>&1
     cd "$main_dir"
     set -l out (git-wclean --force "$wts_dir" </dev/null 2>&1 | string collect)
     # match the report text, not '*stale*': the 'Processing: stale-wt' line
@@ -2265,7 +2404,7 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
     echo s >"$wts_dir/chk-stale/s.txt"
     git -C "$wts_dir/chk-stale" add s.txt
     env GIT_COMMITTER_DATE="2020-01-01T00:00:00" GIT_AUTHOR_DATE="2020-01-01T00:00:00" \
-        git -C "$wts_dir/chk-stale" commit -m "old" >/dev/null 2>&1
+        git -C "$wts_dir/chk-stale" commit -m old >/dev/null 2>&1
     set -l out (git-wclean --check 2>&1)
     if test -z "$out"
         echo "✅ stale alone does not trigger the nudge"
@@ -2289,9 +2428,9 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
     set -l out (git-wclean --check 2>&1)
     set -l line_count (count $out)
     if test $line_count -eq 1
-        and string match -q "*1 reapable*"     -- $out
-        and string match -q "*1 gone*"          -- $out
-        and string match -q "*1 stale*"         -- $out
+        and string match -q "*1 reapable*" -- $out
+        and string match -q "*1 gone*" -- $out
+        and string match -q "*1 stale*" -- $out
         and string match -q "*run 'git wclean'*" -- $out
         echo "✅ one-line nudge with counts"
     else
@@ -2306,7 +2445,7 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
     # timeout/gtimeout from PATH. If --check skipped the fetch (correct), the
     # ref is not pruned and nothing is reapable -> silent. If it fetched
     # anyway, the ref gets pruned and the nudge appears -> fail.
-    echo y | git-wclean "$wts_dir" >/dev/null 2>&1  # clear the gone worktree first
+    echo y | git-wclean "$wts_dir" >/dev/null 2>&1 # clear the gone worktree first
     git -C "$main_dir" worktree add "$wts_dir/chk-gone2" -b chk-gone2 >/dev/null 2>&1
     echo g >"$wts_dir/chk-gone2/g.txt"
     git -C "$wts_dir/chk-gone2" add g.txt
@@ -2395,6 +2534,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wrm_merge_check
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wrm_pr_merged
     set total_failed (math $total_failed + $status)
 
     echo ""
