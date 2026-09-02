@@ -115,8 +115,10 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     # pr-closed: the branch's GitHub PR is merged or closed. The lookup itself
     # (gh present, github.com remote, cwd handling) lives in
     # _git_branch_pr_state so git-wrm applies the identical rules.
-    # Caveat (accepted in spec): 'gh pr view <branch>' reports the most recent
-    # PR for a reused branch name.
+    # 'gh pr view <branch>' reports the most recent PR for a reused branch
+    # NAME, so the verdict counts only when that PR's head commit covers this
+    # HEAD (HEAD is it, or an ancestor of it, e.g. after GitHub's "update
+    # branch"). A reused branch with new commits stays out of pr-closed.
     if test -z "$state"; and not set -q _flag_no_forge; and test -n "$branch"
         set -l remote origin
         if test "$upstream" != -
@@ -124,9 +126,15 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
             set remote (string split -- / $upstream)[1]
         end
         set -l pr (_git_branch_pr_state "$worktree_path" $branch $remote)
-        set -l pr_state (string split \t -- $pr)[1]
-        if contains -- "$pr_state" MERGED CLOSED
-            set state pr-closed
+        # Guard: an empty $pr would leave 'string split' with no arguments
+        if test -n "$pr"
+            set -l pr_fields (string split \t -- $pr)
+            if contains -- "$pr_fields[1]" MERGED CLOSED
+                and test -n "$pr_fields[3]"
+                and git -C "$worktree_path" merge-base --is-ancestor \
+                    $head_commit $pr_fields[3] 2>/dev/null
+                set state pr-closed
+            end
         end
     end
 

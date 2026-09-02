@@ -10,9 +10,16 @@ function _git_branch_pr_state --description "Look up a branch's GitHub PR state 
     #
     # OUTPUT
     #   Exactly one tab-separated line on stdout when a PR is found:
-    #     <state> <number>
-    #   state:   MERGED|CLOSED|OPEN (as reported by 'gh pr view --json state')
-    #   number:  the PR number, or empty if gh did not report one
+    #     <state> <number> <head-sha>
+    #   state:     MERGED|CLOSED|OPEN (as reported by 'gh pr view --json state')
+    #   number:    the PR number, or empty if gh did not report one
+    #   head-sha:  the PR's head commit (headRefOid). 'gh pr view <branch>'
+    #              reports the most recent PR for that branch NAME, so callers
+    #              must apply the verdict only when this commit covers the
+    #              worktree HEAD (HEAD is it, or an ancestor of it):
+    #                git merge-base --is-ancestor <HEAD> <head-sha>
+    #              A reused branch name with new commits otherwise inherits an
+    #              old PR's MERGED verdict and loses unmerged work.
     #
     #   Prints nothing and returns 1 when the lookup does not apply or fails:
     #   gh is not installed, <remote> (default 'origin') is not a github.com
@@ -21,13 +28,16 @@ function _git_branch_pr_state --description "Look up a branch's GitHub PR state 
     #
     # EXAMPLES
     #   set -l pr (_git_branch_pr_state ~/src/repo/feature-x feature-x origin)
-    #   set -l pr_state (string split \t -- $pr)[1]
+    #   if test -n "$pr"
+    #       set -l pr_fields (string split \t -- $pr)
+    #       # $pr_fields[1] = state, [2] = number, [3] = head sha
+    #   end
     #
     # NOTES
     #   - gh runs with the worktree as cwd so it resolves the repository from
     #     that worktree's remotes.
     #   - 'gh pr view <branch>' reports the most recent PR for a reused branch
-    #     name (accepted caveat, shared with the classifier).
+    #     name; the head-sha field exists so callers can detect that case.
     #   - Performs no fetch and no timeout guard: gh fails fast when
     #     unauthenticated or offline.
     set -l worktree_path $argv[1]
@@ -49,7 +59,8 @@ function _git_branch_pr_state --description "Look up a branch's GitHub PR state 
 
     pushd "$worktree_path" >/dev/null 2>&1
     or return 1
-    set -l pr (gh pr view $branch --json state,number --jq '"\(.state)\t\(.number)"' 2>/dev/null)
+    set -l pr (gh pr view $branch --json state,number,headRefOid \
+        --jq '"\(.state)\t\(.number)\t\(.headRefOid)"' 2>/dev/null)
     set -l gh_status $status
     popd >/dev/null
 

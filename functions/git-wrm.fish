@@ -266,6 +266,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     # commits, so ask the forge (same rule as the pr-closed state in
     # git wlist / _git_worktree_status). Only a MERGED PR counts: a CLOSED PR
     # means the work was abandoned, and removing it would lose that work.
+    # 'gh pr view <branch>' reports the most recent PR for a reused branch
+    # NAME, so the PR's head commit must also cover this HEAD (HEAD is it, or
+    # an ancestor of it); otherwise the verdict belongs to older work.
     set -l pr_closed_unmerged false
     if test $commit_found = false; and not set -q _flag_no_forge
         and test -n "$current_branch_name"; and test "$current_branch_name" != HEAD
@@ -273,14 +276,26 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         if test -n "$pr"
             set -l pr_fields (string split \t -- $pr)
             set -l pr_state $pr_fields[1]
+            set -l pr_head $pr_fields[3]
             set -l pr_label PR
             test -n "$pr_fields[2]"; and set pr_label "PR #$pr_fields[2]"
+            set -l pr_covers_head false
+            if test -n "$pr_head"
+                and git merge-base --is-ancestor $head_commit $pr_head 2>/dev/null
+                set pr_covers_head true
+            end
             switch $pr_state
                 case MERGED
-                    set commit_found true
-                    set merged_how "$pr_label merged on GitHub"
-                    printf "  ✓ %s for branch '%s' is merged on GitHub (squash/rebase merge).\n" \
-                        $pr_label $current_branch_name
+                    if test $pr_covers_head = true
+                        set commit_found true
+                        set merged_how "$pr_label merged on GitHub"
+                        printf "  ✓ %s for branch '%s' is merged on GitHub (squash/rebase merge).\n" \
+                            $pr_label $current_branch_name
+                    else
+                        printf "  ✗ %s for branch '%s' is merged on GitHub, but its head (%s) does not cover\n" \
+                            $pr_label $current_branch_name (string sub -l 8 -- "$pr_head")
+                        printf "    this HEAD. Was the branch name reused for new work?\n"
+                    end
                 case CLOSED
                     set pr_closed_unmerged true
                     printf "  ✗ %s for branch '%s' was closed without merging.\n" \
