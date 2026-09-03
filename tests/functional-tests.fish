@@ -1133,6 +1133,80 @@ function test_git_wadd_bare_layout_rejects_invalid_names --description "git-wadd
     return $failed
 end
 
+function test_git_wadd_checks_out_existing_branch --description "git-wadd checks out an existing local branch instead of failing"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+
+    echo "🔍 Testing git-wadd existing-branch checkout..."
+
+    set -l fixture (setup_test_bare_layout)
+    set -l base $fixture[1]
+    set -l container $fixture[2]
+    set -l failed 0
+    set -l total 0
+
+    set -p fish_function_path $test_functions_dir
+
+    cd $container/main
+
+    # Seed a local branch that is not checked out anywhere, with its own commit so
+    # we can verify the worktree landed on that branch's tip.
+    git branch -q feature-y
+    set -l feature_sha (git rev-parse feature-y)
+
+    # Existing branch, no start point: should check it out rather than run -b
+    set total (math $total + 1)
+    set -l out (git-wadd feature-y 2>&1)
+    set -l rc $status
+    if test $rc -eq 0; and test -d "$container/feature-y"
+        echo "  ✅ Worktree created for existing branch"
+    else
+        echo "  ❌ Failed to create worktree for existing branch (rc=$rc, out='$out')"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    set -l head_branch (git -C $container/feature-y rev-parse --abbrev-ref HEAD 2>/dev/null)
+    set -l head_sha (git -C $container/feature-y rev-parse HEAD 2>/dev/null)
+    if test "$head_branch" = feature-y; and test "$head_sha" = "$feature_sha"
+        echo "  ✅ Worktree is on feature-y at its existing tip"
+    else
+        echo "  ❌ Worktree HEAD wrong (branch='$head_branch', sha='$head_sha', want '$feature_sha')"
+        set failed (math $failed + 1)
+    end
+
+    set total (math $total + 1)
+    if string match -q '*existing branch*' -- "$out"
+        echo "  ✅ Output says an existing branch was checked out"
+    else
+        echo "  ❌ Output did not mention existing branch (out='$out')"
+        set failed (math $failed + 1)
+    end
+
+    # Existing branch plus an explicit start point is contradictory: refuse clearly
+    set total (math $total + 1)
+    cd $container/main
+    git branch -q feature-z
+    set -l err (git-wadd feature-z origin/main 2>&1 >/dev/null)
+    set rc $status
+    if test $rc -eq 1; and string match -q '*already exists*' -- "$err"; and not test -d "$container/feature-z"
+        echo "  ✅ Rejects existing branch with explicit start point"
+    else
+        echo "  ❌ Did not reject existing branch + start point (rc=$rc, err='$err', dir="(test -d $container/feature-z; and echo yes; or echo no)")"
+        set failed (math $failed + 1)
+    end
+
+    cleanup_test_bare_layout $base
+    echo "📊 git-wadd existing branch: $total tests, $failed failed"
+    return $failed
+end
+
 function test_git_wadd_non_bare_preserves_path --description "git-wadd in non-bare repo creates worktree relative to cwd"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
@@ -2628,6 +2702,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wadd_bare_layout_rejects_invalid_names
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wadd_checks_out_existing_branch
     set total_failed (math $total_failed + $status)
 
     echo ""

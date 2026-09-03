@@ -113,9 +113,12 @@ Create a new git worktree and automatically switch to it.
 git wadd feature-123
 # Or with abbreviation: g wadd feature-123
 
-# Create worktree from specific branch
+# Create worktree with new branch 'hotfix' started from 'develop'
 git wadd hotfix develop
 # Or: g wadd hotfix develop
+
+# Check out an existing local branch into a worktree of the same name
+git wadd feature-789
 
 # With additional git worktree options
 git wadd feature-456 origin/main --force
@@ -125,6 +128,7 @@ git wadd feature-456 origin/main --force
 
 - Automatically detects upstream branch if none specified
 - Creates new branch and worktree in one command
+- Checks out an existing local branch when the worktree name matches one
 - Switches to the new worktree directory after creation
 
 #### `git wpr` / `git-wpr`
