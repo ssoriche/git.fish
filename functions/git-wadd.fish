@@ -93,11 +93,13 @@ function git-wadd --description "Create a new git worktree and branch"
     set -l worktree_add_args
     if git show-ref --verify --quiet refs/heads/$worktree_name
         if test -n "$branch_name"
-            printf "Error: branch '%s' already exists; cannot create it from '%s'.\n" $worktree_name $branch_name >&2
+            printf "Error: branch '%s' already exists; cannot create it from '%s'.\n" \
+                $worktree_name $branch_name >&2
             printf "Omit <branch-name> to check out the existing branch instead.\n" >&2
             return 1
         end
-        printf "Checking out existing branch '%s' into worktree '%s'...\n" $worktree_name $worktree_name
+        printf "Checking out existing branch '%s' into worktree '%s'...\n" \
+            $worktree_name $worktree_name
         set worktree_add_args $worktree_path $worktree_name
     else
         # If no branch name provided, determine upstream branch

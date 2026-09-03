@@ -1155,10 +1155,19 @@ function test_git_wadd_checks_out_existing_branch --description "git-wadd checks
 
     cd $container/main
 
-    # Seed a local branch that is not checked out anywhere, with its own commit so
-    # we can verify the worktree landed on that branch's tip.
-    git branch -q feature-y
+    # Seed a local branch that is not checked out anywhere, with its own commit ahead
+    # of main so the assertion below can tell "checked out feature-y" apart from
+    # "created a new branch from upstream".
+    git config user.name "Test User"
+    git config user.email "test@example.com"
+    git config commit.gpgsign false
+    git checkout -q -b feature-y
+    printf '%s\n' existing-tip >existing-tip.txt
+    git add existing-tip.txt
+    git commit -q -m "Seed existing branch tip"
     set -l feature_sha (git rev-parse feature-y)
+    git checkout -q main
+    set -l main_sha (git rev-parse HEAD)
 
     # Existing branch, no start point: should check it out rather than run -b
     set total (math $total + 1)
@@ -1174,10 +1183,10 @@ function test_git_wadd_checks_out_existing_branch --description "git-wadd checks
     set total (math $total + 1)
     set -l head_branch (git -C $container/feature-y rev-parse --abbrev-ref HEAD 2>/dev/null)
     set -l head_sha (git -C $container/feature-y rev-parse HEAD 2>/dev/null)
-    if test "$head_branch" = feature-y; and test "$head_sha" = "$feature_sha"
-        echo "  ✅ Worktree is on feature-y at its existing tip"
+    if test "$head_branch" = feature-y; and test "$head_sha" = "$feature_sha"; and test "$head_sha" != "$main_sha"
+        echo "  ✅ Worktree is on feature-y at its existing tip, ahead of main"
     else
-        echo "  ❌ Worktree HEAD wrong (branch='$head_branch', sha='$head_sha', want '$feature_sha')"
+        echo "  ❌ Worktree HEAD wrong (branch='$head_branch', sha='$head_sha', want '$feature_sha', main='$main_sha')"
         set failed (math $failed + 1)
     end
 
