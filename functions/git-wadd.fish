@@ -11,8 +11,10 @@ function git-wadd --description "Create a new git worktree and branch"
     # DESCRIPTION
     #   This command creates a new git worktree and optionally creates a new branch for it.
     #   If no branch name is provided, it will create a new branch based on the current
-    #   upstream branch (typically origin/main). After creating the worktree, it will
-    #   automatically change to the new worktree directory.
+    #   upstream branch (typically origin/main). If <worktree-name> already exists as a
+    #   local branch, that branch is checked out into the new worktree instead of creating
+    #   one (passing <branch-name> in that case is an error). After creating the worktree,
+    #   it will automatically change to the new worktree directory.
     #
     # OPTIONS
     #   -h, --help       Show this help message
@@ -24,16 +26,20 @@ function git-wadd --description "Create a new git worktree and branch"
     #                    path: rejected if empty/whitespace-only, contains '/', is '.'
     #                    or '..', or starts with '-'. Outside a .bare layout, used
     #                    as-is (a path).
-    #   branch-name      Name of the branch to create or check out (optional)
-    #                   If not provided, creates a branch from upstream
+    #   branch-name      Start point for the new branch <worktree-name> (optional)
+    #                   If not provided, creates the branch from upstream. Not allowed
+    #                   when <worktree-name> is already an existing local branch.
     #   git-worktree-options  Additional options to pass to git worktree add
     #
     # EXAMPLES
     #   # Create worktree 'feature-123' with new branch from upstream
     #   git-wadd feature-123
     #
-    #   # Create worktree 'hotfix' based on existing branch 'develop'
+    #   # Create worktree 'hotfix' with new branch 'hotfix' started from 'develop'
     #   git-wadd hotfix develop
+    #
+    #   # Check out the existing local branch 'feature-789' into a worktree
+    #   git-wadd feature-789
     #
     #   # Create worktree with additional git worktree options
     #   git-wadd feature-456 origin/main --force
@@ -82,22 +88,35 @@ function git-wadd --description "Create a new git worktree and branch"
         return 1
     end
 
-    # If no branch name provided, determine upstream branch
-    if test -z "$branch_name"
-        set -l upstream_branch (git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
-        if test $status -eq 0
-            set branch_name $upstream_branch
-            printf "No branch specified, using upstream branch: %s\n" $branch_name
-        else
-            set branch_name origin/main
-            printf "No branch specified and no upstream configured, using: %s\n" $branch_name
+    # A worktree name that matches an existing local branch means "check that branch
+    # out here", not "create a branch of that name" (which git would refuse).
+    set -l worktree_add_args
+    if git show-ref --verify --quiet refs/heads/$worktree_name
+        if test -n "$branch_name"
+            printf "Error: branch '%s' already exists; cannot create it from '%s'.\n" $worktree_name $branch_name >&2
+            printf "Omit <branch-name> to check out the existing branch instead.\n" >&2
+            return 1
         end
+        printf "Checking out existing branch '%s' into worktree '%s'...\n" $worktree_name $worktree_name
+        set worktree_add_args $worktree_path $worktree_name
+    else
+        # If no branch name provided, determine upstream branch
+        if test -z "$branch_name"
+            set -l upstream_branch (git rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)
+            if test $status -eq 0
+                set branch_name $upstream_branch
+                printf "No branch specified, using upstream branch: %s\n" $branch_name
+            else
+                set branch_name origin/main
+                printf "No branch specified and no upstream configured, using: %s\n" $branch_name
+            end
+        end
+
+        printf "Creating worktree '%s' from branch '%s'...\n" $worktree_name $branch_name
+        set worktree_add_args -b $worktree_name $worktree_path $branch_name
     end
 
-    printf "Creating worktree '%s' from branch '%s'...\n" $worktree_name $branch_name
-
-    # Create the worktree with new branch
-    if git worktree add -b $worktree_name $worktree_path $branch_name $extra_args
+    if git worktree add $worktree_add_args $extra_args
         printf "✓ Successfully created worktree: %s\n" $worktree_name
 
         # Change to the new worktree directory
