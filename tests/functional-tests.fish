@@ -625,22 +625,56 @@ function test_git_wclean_dry_run --description "Test git-wclean honors --dry-run
     # Test 1: --dry-run must NOT delete the worktree
     echo "Test 1: git-wclean --dry-run keeps worktrees..."
     set total_tests (math $total_tests + 1)
-    set -l dry_output (git-wclean --dry-run "$wts_dir" 2>&1)
-    if test -d "$wts_dir/merged"; and string match -q '*Would remove*' "$dry_output"
-        echo "✅ git-wclean --dry-run left the worktree in place"
+    # The plan is a wlist-style table: one aligned row per worktree under a
+    # "Would remove (N)" heading, no per-worktree "Processing:" chatter.
+    set -l dry_output (git-wclean --dry-run "$wts_dir" 2>&1 | string collect)
+    set -l misses 0
+    test -d "$wts_dir/merged"; or set misses (math $misses + 1)
+    string match -q '*Would remove (1)*' -- $dry_output; or set misses (math $misses + 1)
+    string match -rq '(?m)^merged\s+merged-copy\s+merged\s+\d+d\s+remove, delete branch$' \
+        -- $dry_output; or set misses (math $misses + 1)
+    string match -q '*Would remove 1 of 1: 1 merged*' -- $dry_output
+    or set misses (math $misses + 1)
+    not string match -q '*Processing:*' -- $dry_output; or set misses (math $misses + 1)
+    if test $misses -eq 0
+        echo "✅ git-wclean --dry-run printed the plan table and left the worktree in place"
     else
-        echo "❌ git-wclean --dry-run should not delete the worktree"
+        echo "❌ dry-run table wrong ($misses misses):"
+        printf '%s\n' $dry_output
         set failed_tests (math $failed_tests + 1)
     end
 
-    # Test 2: a real run removes the merged worktree
+    # Test 1b: --no-delete-branch shows up in the ACTION column
+    echo "Test 1b: --dry-run --no-delete-branch plans to keep the branch..."
+    set total_tests (math $total_tests + 1)
+    set -l dry_output (git-wclean --dry-run --no-delete-branch "$wts_dir" 2>&1 | string collect)
+    if string match -rq '(?m)^merged\s+merged-copy\s+merged\s+\d+d\s+remove, keep branch$' \
+            -- $dry_output
+        echo "✅ ACTION column reads 'remove, keep branch'"
+    else
+        echo "❌ expected 'remove, keep branch' row:"
+        printf '%s\n' $dry_output
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 2: a real run prints the same plan, then one result line per
+    # removal and a "Removed N of M" summary
     echo "Test 2: git-wclean removes merged worktree..."
     set total_tests (math $total_tests + 1)
-    git-wclean "$wts_dir" >/dev/null 2>&1
-    if not test -d "$wts_dir/merged"
-        echo "✅ git-wclean removed the merged worktree"
+    set -l out (git-wclean "$wts_dir" 2>&1 | string collect)
+    set -l misses 0
+    not test -d "$wts_dir/merged"; or set misses (math $misses + 1)
+    string match -q '*Removing (1)*' -- $out; or set misses (math $misses + 1)
+    string match -rq '(?m)^merged\s+merged-copy\s+merged\s+\d+d\s+remove, delete branch$' \
+        -- $out; or set misses (math $misses + 1)
+    string match -q '*✓ merged removed, branch merged-copy deleted*' -- $out
+    or set misses (math $misses + 1)
+    string match -q '*Removed 1 of 1: 1 merged*' -- $out; or set misses (math $misses + 1)
+    if test $misses -eq 0
+        echo "✅ git-wclean removed the merged worktree and reported it in the new format"
     else
-        echo "❌ git-wclean should have removed the merged worktree"
+        echo "❌ real-run output wrong ($misses misses):"
+        printf '%s\n' $out
         set failed_tests (math $failed_tests + 1)
     end
 
@@ -2339,8 +2373,12 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     echo "Test 1: gone + answer n keeps the worktree (and wclean's fetch pruned)..."
     set total_tests (math $total_tests + 1)
     set -l out (echo n | git-wclean "$wts_dir" 2>&1 | string collect)
-    if test -d "$wts_dir/gone-wt"; and string match -q '*Candidate:*upstream gone*' -- $out
-        echo "✅ candidate line shown (proves --prune ran), 'n' kept the worktree"
+    # The plan row proves --prune ran (gone needs the pruned tracking ref);
+    # the declined result line proves the 'n' was honored
+    if test -d "$wts_dir/gone-wt"
+        and string match -rq '(?m)^gone-wt\s+wcs-gone\s+gone\s+\d+d\s+remove after confirm$' -- $out
+        and string match -q '*- gone-wt kept (declined)*' -- $out
+        echo "✅ plan row shown (proves --prune ran), 'n' kept the worktree"
     else
         echo "❌ worktree exists: "(test -d "$wts_dir/gone-wt"; and echo yes; or echo no)", output: $out"
         set failed_tests (math $failed_tests + 1)
@@ -2358,8 +2396,10 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
 
     echo "Test 2b: summary reports a per-category breakdown..."
     set total_tests (math $total_tests + 1)
-    if string match -q '*By category:*1 gone*' -- $out
-        echo "✅ summary breakdown includes '1 gone'"
+    if string match -q '*Removed 1 of 1: 1 gone*' -- $out
+        # a gone branch is not an ancestor of main, so git needs the force delete
+        and string match -q '*✓ gone-wt removed, branch wcs-gone force-deleted*' -- $out
+        echo "✅ result line and summary include '1 gone'"
     else
         echo "❌ summary breakdown missing: $out"
         set failed_tests (math $failed_tests + 1)
@@ -2376,8 +2416,10 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     git -C "$remote_dir" branch -D wcs-gone2 >/dev/null 2>&1
     cd "$main_dir"
     set -l out (git-wclean --dry-run "$wts_dir" 2>&1 | string collect)
-    if test -d "$wts_dir/gone-wt"; and string match -q '*needs confirm*' -- $out
-        echo "✅ dry-run reports 'needs confirm' without removing"
+    if test -d "$wts_dir/gone-wt"
+        and string match -rq '(?m)^gone-wt\s+wcs-gone2\s+gone\s+\d+d\s+remove after confirm$' -- $out
+        and string match -q '*Would remove 1 of 1: 1 gone (confirm each)*' -- $out
+        echo "✅ dry-run reports 'remove after confirm' without removing"
     else
         echo "❌ dry-run wrong: $out"
         set failed_tests (math $failed_tests + 1)
@@ -2399,9 +2441,13 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     git -C "$main_dir" worktree add "$wts_dir/dirty-merged" -b wcs-dirty >/dev/null 2>&1
     echo uncommitted >"$wts_dir/dirty-merged/uncommitted.txt"
     cd "$main_dir"
-    git-wclean --force "$wts_dir" </dev/null >/dev/null 2>&1
+    set -l out (git-wclean --force "$wts_dir" </dev/null 2>&1 | string collect)
+    # Dirty worktrees land in the Kept table with the reason spelled out
     if test -d "$wts_dir/dirty-merged"
-        echo "✅ dirty merged worktree kept under --force"
+        and string match -rq \
+            '(?m)^dirty-merged\s+wcs-dirty\s+merged\s+\d+d\s+uncommitted changes$' -- $out
+        and string match -q '*Kept 1: 1 uncommitted changes*' -- $out
+        echo "✅ dirty merged worktree kept under --force and listed with its reason"
     else
         echo "❌ dirty worktree must never be removed"
         set failed_tests (math $failed_tests + 1)
@@ -2428,10 +2474,13 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
         git -C "$wts_dir/stale-wt" commit -m old >/dev/null 2>&1
     cd "$main_dir"
     set -l out (git-wclean --force "$wts_dir" </dev/null 2>&1 | string collect)
-    # match the report text, not '*stale*': the 'Processing: stale-wt' line
-    # would satisfy that vacuously via the worktree's own name
-    if test -d "$wts_dir/stale-wt"; and string match -q '*never auto-removed*' -- $out
-        echo "✅ stale worktree reported and kept"
+    # Anchor on the full Kept row so the worktree's own name cannot satisfy
+    # a bare '*stale*' match vacuously
+    if test -d "$wts_dir/stale-wt"
+        and string match -rq \
+            '(?m)^stale-wt\s+wcs-stale\s+stale\s+\d+d\s+stale, review manually$' -- $out
+        and string match -q '*Kept 1: 1 stale*' -- $out
+        echo "✅ stale worktree listed as kept with 'review manually'"
     else
         echo "❌ stale handling wrong: $out"
         set failed_tests (math $failed_tests + 1)
