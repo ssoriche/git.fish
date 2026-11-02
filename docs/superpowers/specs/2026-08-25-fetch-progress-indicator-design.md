@@ -45,12 +45,18 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
 ```
 
 - Runs the fetch as a backgrounded external wrapper command — fish cannot
-  background a `begin … end` block or a function (verified on fish 4.7.1:
-  they run synchronously and `$last_pid` stays empty), so the job must be a
-  single external command:
+  background a `begin … end` block or a function: fish has never forked for
+  blocks or functions (there are no subshells), so they run synchronously
+  and `$last_pid` stays empty. This is a design constraint of the shell, not
+  a version quirk; `$last_pid` itself exists since fish 3.1, so every version
+  in the CI matrix (3.3.1, 3.6.0, latest) has it. Because the helper only
+  ever backgrounds an external `sh`, the CI matrix exercises the real
+  behavior on all three versions through the functional tests below. The
+  job must be a single external command:
 
   ```fish
-  sh -c 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1; echo $? >"$0"' \
+  sh -c 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1 &
+         echo $! >"$0.pid"; wait $!; echo $? >"$0"' \
       $status_file $fetch_args 2>/dev/null &
   ```
 
@@ -58,15 +64,21 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   since fish's `wait` does not propagate job status. It is passed as the
   sh script's `$0` positional — fish locals are not exported, so referencing
   a `$STATUS_FILE` variable inside the single-quoted script would silently
-  expand to empty and lose the status. The outer `2>/dev/null` matters too:
-  it silences the wrapper's own job notice
+  expand to empty and lose the status. The wrapper also records the `git
+  fetch` pid in `$0.pid` via POSIX `$!` before `wait`ing on it, so the
+  helper can target the git process directly on the timeout path without
+  any process-table tool (`pgrep` was the previous design; `$!` has no
+  dependency and cannot race with git forking). The outer `2>/dev/null`
+  matters too: it silences the wrapper's own job notice
   (`Terminated: 15  git fetch …`) that `sh` otherwise prints to the
   inherited stderr when its child is killed on the timeout path.
   `$last_pid` is the `sh` wrapper's pid; the `git fetch` process is its
-  *child*.
-- When the job ends before timeout, the helper reads the status file:
-  `0` → return 0; anything else, including an empty or missing file (the
-  exact symptom of a wrapper plumbing bug) → return 2.
+  *child*, whose pid is in the pid file.
+- When the job ends before timeout, the helper `wait`s on `$last_pid` (the
+  wrapper is already gone, so this returns immediately — it just makes the
+  reap explicit on every path, not only the timeout path) and then reads the
+  status file: `0` → return 0; anything else, including an empty or missing
+  file (the exact symptom of a wrapper plumbing bug) → return 2.
 - `GIT_TERMINAL_PROMPT=0` applies at every call site (today only `--check`
   sets it). This is an intended behavior change: a fetch that would have
   prompted for credentials now fails and the caller warns — a background job
@@ -83,30 +95,44 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   - **non-TTY + not quiet:** prints `<label>…` once before starting; no
     animation (clean CI logs and pipes).
   - **`--quiet`:** no output at all (for the `--check` prompt hook).
-- When elapsed ≥ timeout: kill the *git child* — the pids from
-  `pgrep -P $last_pid` (`pgrep` is in the base system on macOS and ships in
-  procps on Linux; it can be absent in minimal containers, which the fallback
-  below covers) — and return **124** regardless of what lands in the status
-  file (matches coreutils `timeout`, which callers already test for). The
-  `sh` wrapper then exits on its own after writing git's signal status, which
-  avoids fish's "Job N terminated" notice that SIGTERM-ing the job itself
-  would print in an interactive shell. Before removing the scratch file, the
-  timeout path briefly waits for the wrapper to exit (bounded — it dies as
-  soon as git does); deleting the file first would let the wrapper's trailing
-  `echo` recreate it and leak it in `$TMPDIR`. Killing only `$last_pid` would instead orphan the
-  still-running `git fetch` — unacceptable for `git-wclean`, which goes on to
-  delete branches while that fetch mutates refs. A process-group kill
-  (`kill -- -$last_pid`) is not an option: background jobs only get their own
-  pgroup in interactive fish; non-interactively (tests, CI, scripts) they
-  share the caller's pgroup and a group kill would take out the harness. If
-  `pgrep` is somehow unavailable, kill `$last_pid` alone and accept the
-  orphaned fetch (it self-terminates).
+- When elapsed ≥ timeout: read the git pid from `$0.pid`, collect its
+  descendants, and SIGTERM the whole tree (descendants and git together);
+  return **124** regardless of what lands in the status file (matches
+  coreutils `timeout`, which callers already test for). The `sh` wrapper then
+  exits on its own after writing git's signal status, which avoids fish's
+  "Job N terminated" notice that SIGTERM-ing the job itself would print in an
+  interactive shell. Before removing the scratch files, the timeout path
+  briefly waits for the wrapper to exit (bounded — it dies as soon as git
+  does); deleting the files first would let the wrapper's trailing `echo`
+  recreate the status file and leak it in `$TMPDIR`.
+  - *Why git itself must die:* killing only `$last_pid` would orphan the
+    still-running `git fetch` — unacceptable for `git-wclean`, which goes on
+    to delete branches while that fetch mutates refs. The pid file makes this
+    kill dependency-free, so there is no "pgrep missing" path where git could
+    survive: if the pid file is empty or missing when the timeout fires, that
+    is the wrapper-plumbing-bug symptom, and the helper falls back to killing
+    `$last_pid` and returns 124.
+  - *Why the descendants must die too:* git does **not** propagate SIGTERM to
+    its transport child. Verified with git 2.55 and
+    `GIT_SSH_COMMAND='sh -c "sleep 6047"'`: after `kill -TERM <git pid>` the
+    `sleep` survived as an orphan. Today's coreutils `timeout` kills the
+    whole process group, so trusting git here would be a regression that
+    leaks a hung `ssh` per timed-out fetch. Descendants are found by walking
+    `ps -eo pid=,ppid=` breadth-first from the git pid (`ps` is in the base
+    system on macOS and in procps and busybox on Linux, so it is far more
+    universal than `pgrep`). If `ps` is somehow unavailable, kill git alone:
+    ref safety is preserved because git is dead; the orphaned transport
+    self-terminates.
+  - A process-group kill (`kill -- -$last_pid`) is not an option: background
+    jobs only get their own pgroup in interactive fish; non-interactively
+    (tests, CI, scripts) they share the caller's pgroup and a group kill
+    would take out the harness.
 - Return codes: **0** fetch succeeded, **1** invalid arguments, **2** fetch
   failed (or `mktemp` failure, or empty/missing status file), **124** timed
   out. Callers keep ownership of
   user-facing success/warning lines — the helper draws only the in-progress
   indicator.
-- Cleans up its scratch file on every path. Sets no globals. Does not check
+- Cleans up both scratch files (status and pid) on every path. Sets no globals. Does not check
   remote existence — the `contains origin (git remote)` guards stay in the
   callers.
 
@@ -161,9 +187,11 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     positional args, which the inner `sh -c` ignores, so the transport
     genuinely hangs — a bare `sleep 60` would reject the extra operands and
     fail fast instead) via the helper with `--timeout 1` → status 124,
-    returns promptly, and the fetch's direct child (`pgrep -P` target) is
-    gone afterwards (`pgrep -P` kills one level deep; git's own SIGTERM
-    handling is trusted to reap its transport grandchildren).
+    returns promptly, the git pid recorded in the pid file is gone, and the
+    transport process is gone too. The fixture makes the transport uniquely
+    identifiable (e.g. `sleep 6047` with an unusual duration) and the test
+    asserts directly with `pgrep -f` that no such process survives — git is
+    *not* trusted to reap it (see the timeout bullet above: it does not).
   - quiet: `--quiet` produces no output on any path.
   - stream separation: non-TTY label line lands on stderr; stdout stays
     empty.
@@ -173,9 +201,9 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     gone-branch ref is *not* pruned when `timeout`/`gtimeout` are absent —
     inverted by the always-fetch design. Its PATH shim (only `git`, `date`,
     `basename`) also lacks the helper's dependencies (`sh`, `mktemp`,
-    `sleep`, `pgrep`, `rm` — fish has no builtin `rm`; the status file should
-    be read with fish's builtin `read < file`, not `cat`, to avoid one more
-    dependency), so left alone it could keep passing accidentally through the
+    `sleep`, `ps`, `rm` — fish has no builtin `rm`; the status and pid files
+    should be read with fish's builtin `read < file`, not `cat`, to avoid one
+    more dependency), so left alone it could keep passing accidentally through the
     helper's mktemp-failure path. Rewrite it to assert the new behavior (fetch runs,
     bounded) with a shim PATH that includes the helper's dependencies.
   - Test 5 (~line 2334) and the Test 3 comment (~lines 2284-2287) rely on
