@@ -95,8 +95,8 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   - **non-TTY + not quiet:** prints `<label>…` once before starting; no
     animation (clean CI logs and pipes).
   - **`--quiet`:** no output at all (for the `--check` prompt hook).
-- When elapsed ≥ timeout: read the git pid from `$0.pid`, collect its
-  descendants, and SIGTERM the whole tree (descendants and git together);
+- When elapsed ≥ timeout: call `_git_fetch_progress_kill_tree $last_pid
+  $git_pid` (where `$git_pid` is read from `$0.pid` and may be empty), then
   return **124** regardless of what lands in the status file (matches
   coreutils `timeout`, which callers already test for). The `sh` wrapper then
   exits on its own after writing git's signal status, which avoids fish's
@@ -105,24 +105,37 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   briefly waits for the wrapper to exit (bounded — it dies as soon as git
   does); deleting the files first would let the wrapper's trailing `echo`
   recreate the status file and leak it in `$TMPDIR`.
+  - *`_git_fetch_progress_kill_tree <wrapper-pid> [<git-pid>]`* is a private
+    function in the same file so the test suite can drive its fallbacks
+    directly. It builds a kill set from two independent sources and SIGTERMs
+    the union (never `<wrapper-pid>` itself, see the job-notice point above):
+    1. every descendant of `<wrapper-pid>` found by walking `ps -eo
+       pid=,ppid=` breadth-first — this reaches git *and* its transport
+       whether or not the pid file was written;
+    2. `<git-pid>` when non-empty — this reaches git even when `ps` is
+       unavailable.
+    Returns 0 when at least one source contributed a target, 1 when neither
+    did (no `ps` *and* empty pid). In that case the caller kills
+    `<wrapper-pid>` alone, prints a stderr warning that the fetch could not
+    be confirmed stopped, and still returns 124. That double failure requires
+    both a broken `$TMPDIR` mid-run and a system without `ps`; it is
+    documented rather than designed around.
   - *Why git itself must die:* killing only `$last_pid` would orphan the
     still-running `git fetch` — unacceptable for `git-wclean`, which goes on
-    to delete branches while that fetch mutates refs. The pid file makes this
-    kill dependency-free, so there is no "pgrep missing" path where git could
-    survive: if the pid file is empty or missing when the timeout fires, that
-    is the wrapper-plumbing-bug symptom, and the helper falls back to killing
-    `$last_pid` and returns 124.
+    to delete branches while that fetch mutates refs. Both sources above
+    reach git, so an empty or missing pid file (the wrapper-plumbing-bug
+    symptom) does **not** leave git alive: the `ps` walk from the wrapper
+    finds it anyway.
   - *Why the descendants must die too:* git does **not** propagate SIGTERM to
     its transport child. Verified with git 2.55 and
     `GIT_SSH_COMMAND='sh -c "sleep 6047"'`: after `kill -TERM <git pid>` the
     `sleep` survived as an orphan. Today's coreutils `timeout` kills the
     whole process group, so trusting git here would be a regression that
-    leaks a hung `ssh` per timed-out fetch. Descendants are found by walking
-    `ps -eo pid=,ppid=` breadth-first from the git pid (`ps` is in the base
-    system on macOS and in procps and busybox on Linux, so it is far more
-    universal than `pgrep`). If `ps` is somehow unavailable, kill git alone:
-    ref safety is preserved because git is dead; the orphaned transport
-    self-terminates.
+    leaks a hung `ssh` per timed-out fetch. The `ps` walk covers them (`ps`
+    is in the base system on macOS and in procps and busybox on Linux, so it
+    is far more universal than `pgrep`). If `ps` is somehow unavailable, the
+    pid file still kills git alone: ref safety is preserved because git is
+    dead; the orphaned transport self-terminates.
   - A process-group kill (`kill -- -$last_pid`) is not an option: background
     jobs only get their own pgroup in interactive fish; non-interactively
     (tests, CI, scripts) they share the caller's pgroup and a group kill
@@ -192,6 +205,16 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     identifiable (e.g. `sleep 6047` with an unusual duration) and the test
     asserts directly with `pgrep -f` that no such process survives — git is
     *not* trusted to reap it (see the timeout bullet above: it does not).
+  - kill-tree fallbacks, driving `_git_fetch_progress_kill_tree` directly
+    against a hand-built wrapper `sh -c 'sleep 6049 & echo $! >"$0"; wait'`
+    so each source can be removed in isolation:
+    - pid file suppressed: call with an *empty* git pid → the `ps` walk alone
+      must leave no `sleep 6049` behind (this is the "pid file empty or
+      missing" path on the real timeout route).
+    - `ps` suppressed: call with the git pid under a shim PATH that lacks
+      `ps` → `sleep 6049` must still be gone (pid-file source alone).
+    - both suppressed: empty pid *and* no `ps` → function returns 1, so the
+      caller's warning path is reachable and asserted.
   - quiet: `--quiet` produces no output on any path.
   - stream separation: non-TTY label line lands on stderr; stdout stays
     empty.
