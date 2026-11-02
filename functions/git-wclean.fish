@@ -479,7 +479,8 @@ end
 
 # Plan one worktree: classify it with the shared classifier and append a
 # tab-separated row to _wclean_plan_rows describing what wclean will do.
-# Row fields: order, age_key, verdict, state, age, name, branch, text, path.
+# Row fields: order, age_key, verdict, state, age, name, branch, text, path,
+# planned_head.
 #   verdict  remove  — removed without asking
 #            confirm — removed after a y/N prompt (--force skips it)
 #            keep    — never removed; text is the reason
@@ -570,8 +571,12 @@ function _wclean_plan_worktree
         set age_disp -
     end
 
-    set -ga _wclean_plan_rows (printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-        $order $age_key $verdict $state $age_disp $name $branch $text $worktree_path)
+    # The HEAD the verdict was based on; the executor re-verifies it before
+    # acting, since earlier prompts can leave this plan minutes old
+    set -l planned_head (git -C "$worktree_path" rev-parse HEAD 2>/dev/null)
+    set -ga _wclean_plan_rows (printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        $order $age_key $verdict $state $age_disp $name $branch $text $worktree_path \
+        "$planned_head")
     return 0
 end
 
@@ -622,11 +627,35 @@ function _wclean_render_plan
     end
 end
 
+# Re-verify a planned removal immediately before acting on it. The plan was
+# computed up front and earlier y/N prompts may have left it minutes old, so
+# the worktree must still sit at the HEAD it was classified at and must still
+# be clean — otherwise 'git worktree remove --force' and the branch -D
+# fallback could destroy work that appeared in between. Prints the reason and
+# returns 1 when the worktree is no longer safe to remove; a failed git call
+# counts as unsafe, matching the classifier's treatment of dirty.
+function _wclean_recheck_worktree
+    set -l path $argv[1]
+    set -l planned_head $argv[2]
+
+    set -l head (git -C "$path" rev-parse HEAD 2>/dev/null)
+    if test $status -ne 0; or test "$head" != "$planned_head"
+        printf "new commits since the plan"
+        return 1
+    end
+    set -l porcelain (git -C "$path" status --porcelain 2>/dev/null)
+    if test $status -ne 0; or test -n "$porcelain"
+        printf "uncommitted changes since the plan"
+        return 1
+    end
+    return 0
+end
+
 # Execute the plan: one result line per planned removal, prompting inline for
 # confirm rows. Outcomes accumulate in _wclean_exec_counts as
-# merged gone pr-closed declined failed.
+# merged gone pr-closed declined failed changed.
 function _wclean_execute_plan
-    set -g _wclean_exec_counts 0 0 0 0 0
+    set -g _wclean_exec_counts 0 0 0 0 0 0
     set -l rows (_wclean_plan_rows_for remove confirm)
     test (count $rows) -gt 0; or return 0
 
@@ -638,6 +667,7 @@ function _wclean_execute_plan
         set -l name $f[6]
         set -l branch $f[7]
         set -l path $f[9]
+        set -l planned_head $f[10]
         test "$branch" = -; and set branch ""
 
         if test $verdict = confirm
@@ -649,6 +679,13 @@ function _wclean_execute_plan
                 set _wclean_exec_counts[4] (math $_wclean_exec_counts[4] + 1)
                 continue
             end
+        end
+
+        set -l why (_wclean_recheck_worktree "$path" "$planned_head")
+        if test $status -ne 0
+            printf "✗ %s not removed (%s)\n" $name $why
+            set _wclean_exec_counts[6] (math $_wclean_exec_counts[6] + 1)
+            continue
         end
 
         if not _wclean_find_main_repo "$path"
@@ -753,6 +790,7 @@ function _wclean_show_summary
     printf '\n'
     set -l n_declined 0
     set -l n_failed 0
+    set -l n_changed 0
     if set -q _wclean_flag_dry_run
         if test $planned -gt 0
             set -l breakdown (_wclean_breakdown "$n_merged merged" "$n_gone gone" \
@@ -764,9 +802,10 @@ function _wclean_show_summary
         end
     else
         set -l c $_wclean_exec_counts
-        set -q c[5]; or set c 0 0 0 0 0
+        set -q c[6]; or set c 0 0 0 0 0 0
         set n_declined $c[4]
         set n_failed $c[5]
+        set n_changed $c[6]
         set -l removed (math $c[1] + $c[2] + $c[3])
         if test $planned -gt 0
             set -l breakdown (_wclean_breakdown "$c[1] merged" "$c[2] gone" "$c[3] pr-closed")
@@ -777,12 +816,12 @@ function _wclean_show_summary
         end
     end
 
-    set -l kept (math $total - $planned + $n_declined + $n_failed)
+    set -l kept (math $total - $planned + $n_declined + $n_failed + $n_changed)
     if test $kept -gt 0
         printf "Kept %d: %s.\n" $kept (_wclean_breakdown "$n_dirty uncommitted changes" \
             "$n_stale stale" "$n_active active" "$n_protected protected" \
             "$n_detached detached" "$n_error unclassified" "$n_declined declined" \
-            "$n_failed failed")
+            "$n_changed changed since plan" "$n_failed failed")
     end
 end
 

@@ -2503,6 +2503,62 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
         set failed_tests (math $failed_tests + 1)
     end
 
+    echo "Test 9: pre-removal recheck refuses a worktree that changed since the plan..."
+    set total_tests (math $total_tests + 1)
+    _wcs_fixture "$remote_dir" "$main_dir" "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/rc" -b wcs-rc >/dev/null 2>&1
+    set -l planned (git -C "$wts_dir/rc" rev-parse HEAD)
+    set -l misses 0
+    # unchanged and clean: safe
+    _wclean_recheck_worktree "$wts_dir/rc" "$planned" >/dev/null; or set misses (math $misses + 1)
+    # untracked file appeared: refused, named as uncommitted changes
+    echo u >"$wts_dir/rc/u.txt"
+    set -l why (_wclean_recheck_worktree "$wts_dir/rc" "$planned")
+    test $status -eq 1; and string match -q '*uncommitted changes*' -- "$why"
+    or set misses (math $misses + 1)
+    # new commit appeared: refused, named as new commits
+    git -C "$wts_dir/rc" add u.txt
+    git -C "$wts_dir/rc" commit -m later >/dev/null 2>&1
+    set -l why (_wclean_recheck_worktree "$wts_dir/rc" "$planned")
+    test $status -eq 1; and string match -q '*new commits*' -- "$why"
+    or set misses (math $misses + 1)
+    if test $misses -eq 0
+        echo "✅ recheck accepts an unchanged clean worktree and refuses dirty or advanced ones"
+    else
+        echo "❌ recheck wrong ($misses misses)"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 10: a worktree dirtied while an earlier prompt waits is not removed..."
+    set total_tests (math $total_tests + 1)
+    _wcs_fixture "$remote_dir" "$main_dir" "$wts_dir"
+    # Two gone worktrees; execution order is by state then name, so 'gone-a'
+    # prompts first and blocks on stdin while 'gone-b' is still pending
+    for n in a b
+        git -C "$main_dir" worktree add "$wts_dir/gone-$n" -b wcs-gone-$n >/dev/null 2>&1
+        echo $n >"$wts_dir/gone-$n/$n.txt"
+        git -C "$wts_dir/gone-$n" add $n.txt
+        git -C "$wts_dir/gone-$n" commit -m "gone $n" >/dev/null 2>&1
+        git -C "$wts_dir/gone-$n" push -u origin wcs-gone-$n >/dev/null 2>&1
+        git -C "$remote_dir" branch -D wcs-gone-$n >/dev/null 2>&1
+    end
+    cd "$main_dir"
+    # The stdin producer waits until the plan is printed and the first prompt
+    # is blocking, dirties gone-b, then answers both prompts with y. It must
+    # be an external command: fish runs a builtin-only block to completion
+    # before starting the rest of the pipeline, which would dirty gone-b
+    # before the plan is even computed
+    set -l out (sh -c 'sleep 3; echo dirty >"$0/gone-b/late.txt"; echo y; echo y' "$wts_dir" \
+        | git-wclean "$wts_dir" 2>&1 | string collect)
+    if not test -d "$wts_dir/gone-a"; and test -d "$wts_dir/gone-b"
+        and string match -q '*✗ gone-b not removed (uncommitted changes since the plan)*' -- $out
+        and string match -q '*1 changed since plan*' -- $out
+        echo "✅ gone-a removed, gone-b kept after it changed mid-run"
+    else
+        echo "❌ recheck during execution wrong: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
     # Cleanup (restore HOME, drop config globals leaked by running git-wclean)
     set -lx HOME $orig_home
     cd "$orig_dir"
