@@ -26,11 +26,8 @@ function _wclean_cleanup_handler
     set -e _wclean_flag_no_delete_branch
     set -e _wclean_flag_check
     set -e _wclean_stale_days
-    set -e _wclean_stale_report
-    set -e _wclean_count_merged
-    set -e _wclean_count_gone
-    set -e _wclean_count_pr_closed
-    set -e _wclean_count_dirty_kept
+    set -e _wclean_plan_rows
+    set -e _wclean_exec_counts
 
     # Clean up config variables
     set -e _wclean_config_protected_branches
@@ -78,11 +75,8 @@ function _wclean_normal_cleanup
     set -e _wclean_flag_no_delete_branch
     set -e _wclean_flag_check
     set -e _wclean_stale_days
-    set -e _wclean_stale_report
-    set -e _wclean_count_merged
-    set -e _wclean_count_gone
-    set -e _wclean_count_pr_closed
-    set -e _wclean_count_dirty_kept
+    set -e _wclean_plan_rows
+    set -e _wclean_exec_counts
 
     # Clean up config variables
     set -e _wclean_config_protected_branches
@@ -282,14 +276,13 @@ function _wclean_setup_directory
     printf "Scanning worktrees in: %s\n" $_wclean_worktrees_dir
 
     if set -q _wclean_flag_dry_run
-        printf "DRY-RUN MODE: No worktrees will actually be removed.\n\n"
+        printf "Dry run: nothing will be removed.\n"
     end
     return 0
 end
 
 # Helper function to fetch remote updates and cache remote info
 function _wclean_fetch_remotes
-    printf "Fetching latest changes from remotes...\n"
 
     # Cache remote information to avoid repeated git calls
     set -g _wclean_remotes (git remote 2>/dev/null)
@@ -399,11 +392,12 @@ function _wclean_find_main_repo
     return 0
 end
 
-# Helper function to remove a worktree and optionally its branch
+# Remove one worktree from the main repository. Quiet: the caller prints the
+# result line. Returns 0 on success, 3 for a protected name, 4 when the path
+# is the main repository itself, 1 for any other failure.
 function _wclean_remove_worktree
     set -l worktree_path $argv[1]
     set -l main_repo $argv[2]
-    set -l current_branch_name $argv[3]
 
     # Validate inputs
     if test -z "$worktree_path"
@@ -430,8 +424,7 @@ function _wclean_remove_worktree
 
     # Protect main worktrees from accidental removal (unless --force is used)
     if contains "$worktree_name" $_wclean_config_protected_branches; and not set -q _wclean_flag_force
-        printf "  Protected: '%s' worktree will not be removed for safety.\n" $worktree_name
-        return 1
+        return 3
     end
 
     # Don't remove the main repository itself
@@ -439,8 +432,7 @@ function _wclean_remove_worktree
     set -l main_repo_real (realpath "$main_repo" 2>/dev/null || echo "$main_repo")
 
     if test "$subdir_real" = "$main_repo_real"
-        printf "  This is the main repository, cannot remove.\n"
-        return 1
+        return 4
     end
 
     # Change to main repository to run worktree remove
@@ -450,83 +442,49 @@ function _wclean_remove_worktree
         return 1
     end
 
-    if set -q _wclean_flag_dry_run
-        printf "Would remove worktree: %s\n" $worktree_name
-        # Show branch deletion info (only when the worktree has a branch, i.e.
-        # not a detached HEAD).
-        if test -n "$current_branch_name"
-            if not set -q _wclean_flag_no_delete_branch
-                printf "  Would also delete local branch: %s\n" $current_branch_name
-            else
-                printf "  Would keep local branch: %s\n" $current_branch_name
-            end
-        end
-    else
-        if git worktree remove --force "$worktree_name" >/dev/null 2>&1
-            printf "Removed worktree: %s\n" $worktree_name
-
-            # Remove the associated local branch unless --no-delete-branch is specified
-            if test -n "$current_branch_name"; and not set -q _wclean_flag_no_delete_branch
-                _wclean_remove_branch "$current_branch_name"
-            else if test -n "$current_branch_name"
-                printf "  Keeping local branch '%s' as requested.\n" $current_branch_name
-            end
-        else
-            printf "  Error: Failed to remove worktree '%s'. Check if it exists and is not in use.\n" $worktree_name >&2
-            popd >/dev/null
-            return 1
-        end
-    end
-
+    git worktree remove --force "$worktree_name" >/dev/null 2>&1
+    set -l rc $status
     popd >/dev/null
+    test $rc -eq 0; or return 1
     return 0
 end
 
-# Helper function to remove a branch
+# Delete a local branch from the main repository. Prints a short phrase for
+# the caller's result line ("branch X deleted", "branch X not found", ...)
+# and returns 0 unless the deletion was attempted and failed.
 function _wclean_remove_branch
-    set -l branch_name $argv[1]
+    set -l main_repo $argv[1]
+    set -l branch_name $argv[2]
 
-    # Validate input
     if test -z "$branch_name"
-        printf "  Error: No branch name provided for deletion\n" >&2
+        printf "no branch to delete"
         return 1
     end
 
-    printf "  Removing associated local branch '%s'...\n" $branch_name
-
-    # Performance optimization: use git rev-parse to check existence more efficiently
-    if git rev-parse --verify "refs/heads/$branch_name" >/dev/null 2>&1
-        if git branch -d "$branch_name" >/dev/null 2>&1
-            printf "  ✓ Successfully deleted local branch: %s\n" $branch_name
-            return 0
-        else if git branch -D "$branch_name" >/dev/null 2>&1
-            printf "  ✓ Force deleted local branch: %s (had unmerged changes)\n" $branch_name
-            return 0
-        else
-            printf "  Warning: Failed to delete local branch '%s'.\n" $branch_name >&2
-            return 1
-        end
-    else
-        printf "  Local branch '%s' not found, skipping deletion.\n" $branch_name
+    if not git -C "$main_repo" rev-parse --verify "refs/heads/$branch_name" >/dev/null 2>&1
+        printf "branch %s not found" $branch_name
         return 0
     end
-end
-
-# Helper function to bump the per-category summary counter matching a
-# classifier state ('gone' or 'pr-closed'; 'merged' and dirty-kept are
-# incremented inline since they have only one counter each).
-function _wclean_bump_state_count
-    set -l state $argv[1]
-    if test "$state" = gone
-        set -g _wclean_count_gone (math $_wclean_count_gone + 1)
-    else
-        set -g _wclean_count_pr_closed (math $_wclean_count_pr_closed + 1)
+    if git -C "$main_repo" branch -d "$branch_name" >/dev/null 2>&1
+        printf "branch %s deleted" $branch_name
+        return 0
     end
+    if git -C "$main_repo" branch -D "$branch_name" >/dev/null 2>&1
+        printf "branch %s force-deleted" $branch_name
+        return 0
+    end
+    printf "failed to delete branch %s" $branch_name
+    return 1
 end
 
-# Helper function to process a single worktree, driven by the shared classifier.
-# Returns 0 when the worktree was removed (or would be, in dry-run), 1 otherwise.
-function _wclean_process_worktree
+# Plan one worktree: classify it with the shared classifier and append a
+# tab-separated row to _wclean_plan_rows describing what wclean will do.
+# Row fields: order, age_key, verdict, state, age, name, branch, text, path.
+#   verdict  remove  — removed without asking
+#            confirm — removed after a y/N prompt (--force skips it)
+#            keep    — never removed; text is the reason
+#   text     the ACTION (remove/confirm) or REASON (keep) column
+function _wclean_plan_worktree
     set -l worktree_path $argv[1]
 
     if test -z "$worktree_path"
@@ -538,17 +496,11 @@ function _wclean_process_worktree
         return 1
     end
 
-    if not test -d "$worktree_path"
-        return 1
-    end
-
-    if not test -e "$worktree_path/.git"
-        printf "Skipping '%s': Not a git repository.\n" (basename $worktree_path)
+    if not test -d "$worktree_path"; or not test -e "$worktree_path/.git"
         return 1
     end
 
     set -l name (basename $worktree_path)
-    printf "Processing: %s\n" $name
 
     # --force preserves the documented escape hatch by classifying with an
     # empty protected list, so protected worktrees fall through to the normal
@@ -560,131 +512,278 @@ function _wclean_process_worktree
         $_wclean_stale_days $protected_list)
     # Guard against an empty classifier line: string split's implicit-stdin
     # form (no args after --) would otherwise read from stdin and consume a
-    # piped y/n confirmation intended for the read -P prompt below.
+    # piped y/n confirmation intended for the read -P prompt later.
     test -z "$line"; and set line (printf 'error\t-\t-\t-\t-\t%s' "$worktree_path")
     set -l f (string split \t -- $line)
     set -l state $f[1]
     set -l branch $f[2]
-    test "$branch" = -; and set branch ""
     set -l dirty $f[4]
     set -l age $f[5]
 
+    # What removal would do to the branch, shared by every removable state
+    set -l remove_action remove
+    if test -n "$branch"; and test "$branch" != -
+        set remove_action "remove, delete branch"
+        set -q _wclean_flag_no_delete_branch; and set remove_action "remove, keep branch"
+    end
+
+    set -l verdict keep
+    set -l text
     switch $state
         case merged
             if test "$dirty" = dirty
-                printf "  ✗ Merged into %s but has uncommitted changes. Keeping worktree.\n" \
-                    $_wclean_default_branch
-                set -g _wclean_count_dirty_kept (math $_wclean_count_dirty_kept + 1)
-                return 1
+                set text "uncommitted changes"
+            else
+                set verdict remove
+                set text $remove_action
             end
-            printf "  ✓ Merged into %s.\n" $_wclean_default_branch
-            if not _wclean_find_main_repo "$worktree_path"
-                return 1
-            end
-            if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$branch"
-                set -g _wclean_count_merged (math $_wclean_count_merged + 1)
-                return 0
-            end
-            return 1
         case gone pr-closed
-            set -l reason "upstream gone"
-            test $state = pr-closed; and set reason "PR merged/closed"
             if test "$dirty" = dirty
-                printf "  ✗ %s but has uncommitted changes. Keeping worktree.\n" $reason
-                set -g _wclean_count_dirty_kept (math $_wclean_count_dirty_kept + 1)
-                return 1
+                set text "uncommitted changes"
+            else if set -q _wclean_flag_force
+                set verdict remove
+                set text $remove_action
+            else
+                set verdict confirm
+                set text "remove after confirm"
             end
-            # Printed before the prompt: read -P shows nothing on non-tty
-            # stdin, so this line is the only visible removal-candidate signal
-            printf "  Candidate: %s (%s)\n" $name $reason
-            if set -q _wclean_flag_dry_run
-                printf "Would remove worktree: %s (needs confirm: %s)\n" $name $reason
-                _wclean_bump_state_count $state
-                return 0
-            end
-            if not set -q _wclean_flag_force
-                read -l -P "Remove '$name' ($reason)? [y/N] " reply
-                if not string match -qi y -- "$reply"
-                    printf "  Keeping worktree.\n"
-                    return 1
-                end
-            end
-            if not _wclean_find_main_repo "$worktree_path"
-                return 1
-            end
-            if _wclean_remove_worktree "$worktree_path" "$_wclean_main_repo" "$branch"
-                _wclean_bump_state_count $state
-                return 0
-            end
-            return 1
         case stale
-            printf "  - Stale (%sd, threshold %sd). Review manually; never auto-removed.\n" \
-                $age $_wclean_stale_days
-            set -ga _wclean_stale_report "$name ($age"d")"
-            return 1
+            set text "stale, review manually"
         case protected
-            printf "  Protected: '%s' worktree will not be removed for safety.\n" $name
-            return 1
+            set text protected
         case detached
-            printf "  - Detached HEAD. Keeping worktree.\n"
-            return 1
+            set text "detached HEAD"
         case error
-            printf "  Error: could not classify worktree. Keeping it.\n" >&2
-            return 1
+            set text "could not classify"
         case '*'
-            printf "  - Not merged (state: %s). Keeping worktree.\n" $state
-            return 1
+            set text "not merged"
+    end
+
+    # Sort keys: wlist's state order, then oldest first; error rows carry '-'
+    set -l state_order merged pr-closed gone stale error detached active protected
+    set -l order (contains -i -- $state $state_order)
+    or set order 9
+    set -l age_key $age
+    set -l age_disp "$age"d
+    if test "$age" = -
+        set age_key 0
+        set age_disp -
+    end
+
+    set -ga _wclean_plan_rows (printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        $order $age_key $verdict $state $age_disp $name $branch $text $worktree_path)
+    return 0
+end
+
+# Print the plan rows whose verdict is in $argv, sorted by state order then
+# oldest first — the single ordering shared by the tables and the execution
+# pass, so results appear in the same order the plan listed them.
+function _wclean_plan_rows_for
+    set -l verdicts $argv
+    for row in $_wclean_plan_rows
+        set -l f (string split \t -- $row)
+        contains -- $f[3] $verdicts; and printf '%s\n' $row
+    end | sort -t \t -k1,1n -k2,2nr
+end
+
+# Render one aligned table (NAME BRANCH STATE AGE <last_col>) from plan rows
+function _wclean_render_table
+    set -l heading $argv[1]
+    set -l last_col $argv[2]
+    set -l rows $argv[3..]
+
+    printf '%s\n' $heading
+    begin
+        printf 'NAME\tBRANCH\tSTATE\tAGE\t%s\n' $last_col
+        for row in $rows
+            set -l f (string split \t -- $row)
+            printf '%s\t%s\t%s\t%s\t%s\n' $f[6] $f[7] $f[4] $f[5] $f[8]
+        end
+    end | column -t -s \t
+end
+
+# Render the plan: the removal table (or a one-line "nothing") and the kept
+# table. Identical in dry-run and real runs apart from the heading verb.
+function _wclean_render_plan
+    set -l remove_rows (_wclean_plan_rows_for remove confirm)
+    set -l keep_rows (_wclean_plan_rows_for keep)
+
+    if test (count $remove_rows) -gt 0
+        set -l verb Removing
+        set -q _wclean_flag_dry_run; and set verb "Would remove"
+        _wclean_render_table "$verb ("(count $remove_rows)")" ACTION $remove_rows
+    else
+        printf "Nothing to remove.\n"
+    end
+
+    if test (count $keep_rows) -gt 0
+        printf '\n'
+        _wclean_render_table "Kept ("(count $keep_rows)")" REASON $keep_rows
     end
 end
 
-# Helper function to show summary
-function _wclean_show_summary
-    set -l processed_count $argv[1]
-    set -l removed_count $argv[2]
-    set -l skipped_count $argv[3]
+# Execute the plan: one result line per planned removal, prompting inline for
+# confirm rows. Outcomes accumulate in _wclean_exec_counts as
+# merged gone pr-closed declined failed.
+function _wclean_execute_plan
+    set -g _wclean_exec_counts 0 0 0 0 0
+    set -l rows (_wclean_plan_rows_for remove confirm)
+    test (count $rows) -gt 0; or return 0
 
-    printf "\nSummary:\n"
-    printf "  Processed: %d worktrees\n" $processed_count
-    if set -q _wclean_flag_dry_run
-        printf "  Would remove: %d worktrees\n" $removed_count
-    else
-        printf "  Removed: %d worktrees\n" $removed_count
-    end
+    printf '\n'
+    for row in $rows
+        set -l f (string split \t -- $row)
+        set -l verdict $f[3]
+        set -l state $f[4]
+        set -l name $f[6]
+        set -l branch $f[7]
+        set -l path $f[9]
+        test "$branch" = -; and set branch ""
 
-    set -l cat_total (math $_wclean_count_merged + $_wclean_count_gone \
-        + $_wclean_count_pr_closed + $_wclean_count_dirty_kept)
-    if test $cat_total -gt 0
-        set -l parts
-        if test $_wclean_count_merged -gt 0
-            set -a parts (printf '%d merged' $_wclean_count_merged)
-        end
-        if test $_wclean_count_gone -gt 0
-            set -a parts (printf '%d gone' $_wclean_count_gone)
-        end
-        if test $_wclean_count_pr_closed -gt 0
-            set -a parts (printf '%d pr-closed' $_wclean_count_pr_closed)
-        end
-        set -l breakdown (string join ', ' $parts)
-        if test $_wclean_count_dirty_kept -gt 0
-            if test -n "$breakdown"
-                set breakdown "$breakdown ($_wclean_count_dirty_kept kept dirty)"
-            else
-                set breakdown "$_wclean_count_dirty_kept kept dirty"
+        if test $verdict = confirm
+            set -l reason "upstream gone"
+            test $state = pr-closed; and set reason "PR merged/closed"
+            read -l -P "Remove '$name' ($reason)? [y/N] " reply
+            if not string match -qi y -- "$reply"
+                printf "%s kept (declined)\n" "- $name"
+                set _wclean_exec_counts[4] (math $_wclean_exec_counts[4] + 1)
+                continue
             end
         end
-        printf "  By category: %s\n" "$breakdown"
+
+        if not _wclean_find_main_repo "$path"
+            printf "✗ %s not removed (cannot locate the main repository)\n" $name
+            set _wclean_exec_counts[5] (math $_wclean_exec_counts[5] + 1)
+            continue
+        end
+
+        _wclean_remove_worktree "$path" "$_wclean_main_repo"
+        set -l rc $status
+        if test $rc -ne 0
+            set -l why "git worktree remove failed"
+            test $rc -eq 3; and set why "protected name"
+            test $rc -eq 4; and set why "this is the main repository"
+            printf "✗ %s not removed (%s)\n" $name $why
+            set _wclean_exec_counts[5] (math $_wclean_exec_counts[5] + 1)
+            continue
+        end
+
+        set -l detail removed
+        if test -n "$branch"
+            if set -q _wclean_flag_no_delete_branch
+                set detail "removed, branch $branch kept"
+            else
+                set detail "removed, "(_wclean_remove_branch "$_wclean_main_repo" "$branch")
+            end
+        end
+        printf "✓ %s %s\n" $name $detail
+
+        switch $state
+            case merged
+                set _wclean_exec_counts[1] (math $_wclean_exec_counts[1] + 1)
+            case gone
+                set _wclean_exec_counts[2] (math $_wclean_exec_counts[2] + 1)
+            case pr-closed
+                set _wclean_exec_counts[3] (math $_wclean_exec_counts[3] + 1)
+        end
     end
+end
 
-    printf "  Kept/Skipped: %d worktrees\n" $skipped_count
+# Join "<n> <label>" parts for the non-zero counts, in the given label order
+function _wclean_breakdown
+    set -l parts
+    for pair in $argv
+        set -l p (string split -m1 ' ' -- $pair)
+        if test $p[1] -gt 0
+            set -a parts "$p[1] $p[2]"
+        end
+    end
+    string join ', ' $parts
+end
 
-    if set -q _wclean_stale_report[1]
-        printf "\nStale — review manually:\n"
-        for entry in $_wclean_stale_report
-            printf "  %s\n" $entry
+# Two-line summary: what was (or would be) removed, and why the rest stayed
+function _wclean_show_summary
+    set -l total $argv[1]
+    set -l remove_rows (_wclean_plan_rows_for remove confirm)
+    set -l planned (count $remove_rows)
+
+    # Planned removals by state
+    set -l n_merged 0
+    set -l n_gone 0
+    set -l n_pr 0
+    set -l n_confirm 0
+    for row in $remove_rows
+        set -l f (string split \t -- $row)
+        test $f[3] = confirm; and set n_confirm (math $n_confirm + 1)
+        switch $f[4]
+            case merged
+                set n_merged (math $n_merged + 1)
+            case gone
+                set n_gone (math $n_gone + 1)
+            case pr-closed
+                set n_pr (math $n_pr + 1)
         end
     end
 
-    printf "\nWorktree cleanup completed!\n"
+    # Kept rows by reason text
+    set -l n_dirty 0
+    set -l n_stale 0
+    set -l n_active 0
+    set -l n_protected 0
+    set -l n_detached 0
+    set -l n_error 0
+    for row in (_wclean_plan_rows_for keep)
+        set -l f (string split \t -- $row)
+        switch $f[8]
+            case 'uncommitted changes'
+                set n_dirty (math $n_dirty + 1)
+            case 'stale, review manually'
+                set n_stale (math $n_stale + 1)
+            case protected
+                set n_protected (math $n_protected + 1)
+            case 'detached HEAD'
+                set n_detached (math $n_detached + 1)
+            case 'could not classify'
+                set n_error (math $n_error + 1)
+            case '*'
+                set n_active (math $n_active + 1)
+        end
+    end
+
+    printf '\n'
+    set -l n_declined 0
+    set -l n_failed 0
+    if set -q _wclean_flag_dry_run
+        if test $planned -gt 0
+            set -l breakdown (_wclean_breakdown "$n_merged merged" "$n_gone gone" \
+                "$n_pr pr-closed")
+            test $n_confirm -gt 0; and set breakdown "$breakdown (confirm each)"
+            printf "Would remove %d of %d: %s.\n" $planned $total $breakdown
+        else
+            printf "Nothing to remove.\n"
+        end
+    else
+        set -l c $_wclean_exec_counts
+        set -q c[5]; or set c 0 0 0 0 0
+        set n_declined $c[4]
+        set n_failed $c[5]
+        set -l removed (math $c[1] + $c[2] + $c[3])
+        if test $planned -gt 0
+            set -l breakdown (_wclean_breakdown "$c[1] merged" "$c[2] gone" "$c[3] pr-closed")
+            test -n "$breakdown"; and set breakdown ": $breakdown"
+            printf "Removed %d of %d%s.\n" $removed $planned "$breakdown"
+        else
+            printf "Nothing to remove.\n"
+        end
+    end
+
+    set -l kept (math $total - $planned + $n_declined + $n_failed)
+    if test $kept -gt 0
+        printf "Kept %d: %s.\n" $kept (_wclean_breakdown "$n_dirty uncommitted changes" \
+            "$n_stale stale" "$n_active active" "$n_protected protected" \
+            "$n_detached detached" "$n_error unclassified" "$n_declined declined" \
+            "$n_failed failed")
+    end
 end
 
 # --check mode: at most one line on stdout, only when something is reapable.
@@ -797,6 +896,12 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   older than the staleness window are reported for manual review and never
     #   auto-removed.
     #
+    #   Output is a plan, in the same table layout as git-wlist: a "Removing"
+    #   (or, with --dry-run, "Would remove") table with an ACTION column, then a
+    #   "Kept" table with a REASON column, both sorted by state and oldest
+    #   first. A real run then prints one result line per removal (✓ removed,
+    #   - kept (declined), ✗ not removed) and a two-line summary.
+    #
     # OPTIONS
     #   -n, --dry-run        Show what would be removed without actually removing anything
     #   -f, --force          Force removal including protected worktrees (use with caution)
@@ -905,13 +1010,10 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     set -q _wclean_stale_days
     or set -g _wclean_stale_days $_wclean_config_stale_days
 
-    # Fresh stale report and per-category counters per run: an earlier
-    # aborted run in the same shell may have leaked these globals
-    set -e _wclean_stale_report
-    set -g _wclean_count_merged 0
-    set -g _wclean_count_gone 0
-    set -g _wclean_count_pr_closed 0
-    set -g _wclean_count_dirty_kept 0
+    # Fresh plan per run: an earlier aborted run in the same shell may have
+    # leaked these globals
+    set -g _wclean_plan_rows
+    set -e _wclean_exec_counts
 
     # Setup and validate directory
     if not _wclean_setup_directory
@@ -924,38 +1026,24 @@ function git-wclean --description "Clean up git worktrees that have been merged 
         return 2
     end
 
-    # Track statistics
-    set -l processed_count 0
-    set -l removed_count 0
-    set -l skipped_count 0
-
-    # Performance optimization: pre-scan and filter valid worktree directories
+    # Pre-scan: only directories that look like worktrees are planned
     set -l worktree_dirs
     for subdir in $_wclean_worktrees_dir/*/
-        # Remove trailing slash
         set subdir (string trim -r -c '/' -- $subdir)
-        # Quick validation to avoid processing invalid directories
         if test -d "$subdir"; and test -e "$subdir/.git"
             set -a worktree_dirs $subdir
         end
     end
 
-    printf "Found %d potential worktrees to process.\n\n" (count $worktree_dirs)
-
-    # Iterate through validated worktree directories
+    # Plan everything first (read-only), show the plan, then act on it
     for subdir in $worktree_dirs
-        set processed_count (math $processed_count + 1)
-
-        # Process the worktree
-        if _wclean_process_worktree "$subdir"
-            set removed_count (math $removed_count + 1)
-        else
-            set skipped_count (math $skipped_count + 1)
-        end
+        _wclean_plan_worktree "$subdir"
     end
-
-    # Show summary
-    _wclean_show_summary $processed_count $removed_count $skipped_count
+    _wclean_render_plan
+    if not set -q _wclean_flag_dry_run
+        _wclean_execute_plan
+    end
+    _wclean_show_summary (count $worktree_dirs)
 
     # Clean up before exit
     _wclean_normal_cleanup
