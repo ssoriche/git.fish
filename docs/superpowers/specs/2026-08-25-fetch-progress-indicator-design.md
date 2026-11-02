@@ -115,11 +115,13 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     2. `<git-pid>` when non-empty — this reaches git even when `ps` is
        unavailable.
     Returns 0 when at least one source contributed a target, 1 when neither
-    did (no `ps` *and* empty pid). In that case the caller kills
+    did (no `ps` *and* empty pid). In that case the helper kills
     `<wrapper-pid>` alone, prints a stderr warning that the fetch could not
-    be confirmed stopped, and still returns 124. That double failure requires
-    both a broken `$TMPDIR` mid-run and a system without `ps`; it is
-    documented rather than designed around.
+    be confirmed stopped, and returns **125** instead of 124 so callers can
+    tell "timed out, fetch is dead" from "timed out, fetch may still be
+    running". That double failure requires both a broken `$TMPDIR` mid-run
+    and a system without `ps`; it is surfaced to the caller rather than
+    designed around.
   - *Why git itself must die:* killing only `$last_pid` would orphan the
     still-running `git fetch` — unacceptable for `git-wclean`, which goes on
     to delete branches while that fetch mutates refs. Both sources above
@@ -142,7 +144,8 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     would take out the harness.
 - Return codes: **0** fetch succeeded, **1** invalid arguments, **2** fetch
   failed (or `mktemp` failure, or empty/missing status file), **124** timed
-  out. Callers keep ownership of
+  out and the fetch tree was killed, **125** timed out but the fetch could
+  not be confirmed stopped (the double-failure path above). Callers keep ownership of
   user-facing success/warning lines — the helper draws only the in-progress
   indicator.
 - Cleans up both scratch files (status and pid) on every path. Sets no globals. Does not check
@@ -176,8 +179,15 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
 
 ## Error handling
 
-- Fetch failure and timeout are non-fatal everywhere, exactly as today: each
-  caller warns and proceeds with local information.
+- Fetch failure (2) and a clean timeout (124) are non-fatal everywhere,
+  exactly as today: each caller warns and proceeds with local information.
+- An unconfirmed timeout (125) is handled by what the caller does next:
+  - `git-wclean` (full run and `--check`) and `git-wrm` go on to delete
+    worktrees and branches, so they treat 125 as fatal: print the helper's
+    warning context, remove nothing, exit 2. A fetch that may still be
+    rewriting remote-tracking refs must not race a branch deletion.
+  - `git-wlist` is read-only, so it warns and proceeds like 124; the worst
+    outcome is a slightly stale dashboard.
 - A Ctrl-C during the spinner kills the foreground loop; the background fetch
   may briefly outlive it (interactively it sits in its own process group and
   won't receive the SIGINT). Accepted: `git fetch` is idempotent, read-only
@@ -213,8 +223,14 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
       missing" path on the real timeout route).
     - `ps` suppressed: call with the git pid under a shim PATH that lacks
       `ps` → `sleep 6049` must still be gone (pid-file source alone).
-    - both suppressed: empty pid *and* no `ps` → function returns 1, so the
-      caller's warning path is reachable and asserted.
+    - both suppressed: empty pid *and* no `ps` → function returns 1 and the
+      `sleep 6049` is expected to *survive* (the test kills it itself
+      afterwards); this is the one case where cleanup is honestly
+      unconfirmed, which is exactly why it maps to 125 rather than 124.
+  - 125 propagation: stub `_git_fetch_progress` with a test-local function
+    that returns 125 and assert that `git-wclean` (full run and `--check`)
+    and `git-wrm` exit 2 having removed nothing, while `git-wlist` still
+    prints its table.
   - quiet: `--quiet` produces no output on any path.
   - stream separation: non-TTY label line lands on stderr; stdout stays
     empty.
