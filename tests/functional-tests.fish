@@ -2986,49 +2986,62 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     # because a live git respawns its transport when the old one dies.
     pkill -f 'git fetch fp6047' 2>/dev/null
     pkill -f 'sleep 6047' 2>/dev/null
-    echo "Test 8: SIGINT to the fish process alone kills the fetch tree and removes scratch files..."
+    echo "Test 8: SIGINT to the fish process stops the fetch, cleans up, and returns 130..."
     set total_tests (math $total_tests + 1)
-    # A child fish runs the helper against a hanging transport. Signalling
-    # only the child's pid (not its process group) models an interactive
-    # Ctrl-C, where the background job sits in its own group and never sees
-    # the signal: only the INT handler can clean up.
+    # This models the NON-interactive case (scripts, CI, kill -INT <fish>):
+    # fish itself receives the signal, the INT handler cleans up, and the
+    # spinner loop must then observe the interrupted flag and return 130
+    # rather than resume and report a plain failure. The interactive case
+    # (Ctrl-C goes to the foreground sleep, not to fish) is covered by
+    # Test 9 (fish_postexec) and by the manual pty check in the spec.
+    # The child fish records its own pid (the one to signal) and an sh
+    # parent records its exit status, since fish's wait does not carry it.
+    set -l child_pidfile $cap_dir/child8.pid
+    set -l child_rcfile $cap_dir/child8.rc
     set -lx GIT_SSH_COMMAND 'sh -c "sleep 6048"'
-    fish -c "set -p fish_function_path $test_functions_dir
+    sh -c 'fish -c "$1"; echo $? >"$0"' $child_rcfile "printf '%s\n' \$fish_pid >$child_pidfile
+        set -p fish_function_path $test_functions_dir
         source $test_functions_dir/_git_fetch_progress.fish
         cd $repo_dir
-        _git_fetch_progress --label 'Fetching from fp6048' --timeout 30 -- fp6048" \
-        >$cap_dir/out8 2>$cap_dir/err8 &
-    set -l child $last_pid
+        _git_fetch_progress --label 'Fetching from fp6048' --timeout 30 -- fp6048
+        set -l rc \$status
+        printf 'rc=%s\n' \$rc >&2
+        exit \$rc" >$cap_dir/out8 2>$cap_dir/err8 &
     set -e GIT_SSH_COMMAND
     # Wait for the label line: the fetch is then in flight.
     for _i in (seq 1 50)
-        test -s $cap_dir/err8; and break
+        test -s $cap_dir/err8; and test -s $child_pidfile; and break
         sleep 0.1
     end
     sleep 0.5
+    set -l child (string trim <$child_pidfile)
     kill -INT $child 2>/dev/null
     set -l child_alive 1
     for _i in (seq 1 40)
-        if not kill -0 $child 2>/dev/null
+        if not kill -0 $child 2>/dev/null; and test -s $child_rcfile
             set child_alive 0
             break
         end
         sleep 0.1
     end
     sleep 0.3
+    set -l child_rc (string trim <$child_rcfile 2>/dev/null)
+    set -l err_text (string collect <$cap_dir/err8)
     set -l transport (pgrep -f 'sleep 6048')
     set -l gitproc (pgrep -f 'git fetch fp6048')
     set -l leftovers $tmp_dir/*
     if test $child_alive -eq 0
+        and test "$child_rc" = 130
+        and string match -q '*rc=130*' -- $err_text
         and test -z "$transport"
         and test -z "$gitproc"
         and test (count $leftovers) -eq 0
-        echo "✅ INT handler killed git and transport and emptied TMPDIR"
+        echo "✅ INT handler killed git and transport, emptied TMPDIR, helper returned 130"
     else
-        echo "❌ child_alive=$child_alive transport='$transport' git='$gitproc' leftovers=$leftovers"
+        echo "❌ child_alive=$child_alive rc='$child_rc' stderr='$err_text' transport='$transport' git='$gitproc' leftovers=$leftovers"
         set failed_tests (math $failed_tests + 1)
     end
-    kill -TERM $child 2>/dev/null
+    test -n "$child"; and kill -TERM $child 2>/dev/null
     pkill -f 'sleep 6048' 2>/dev/null
     pkill -f 'git fetch fp6048' 2>/dev/null
 

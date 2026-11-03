@@ -88,6 +88,9 @@ function _git_fetch_progress --description "Run git fetch in the background with
     set -l started (date +%s)
     set -l timed_out 0
     while kill -0 $wrapper_pid 2>/dev/null
+        # The INT/TERM handler has already killed the fetch and cleaned up;
+        # fish resumes this loop afterwards, so stop here and report 130.
+        set -q _git_fetch_progress_interrupted; and break
         set -l elapsed (math (date +%s) - $started)
         if test $elapsed -ge $_flag_timeout
             set timed_out 1
@@ -101,6 +104,12 @@ function _git_fetch_progress --description "Run git fetch in the background with
     end
     if test $tty -eq 1
         printf '\r\033[K' >&2
+    end
+    if set -q _git_fetch_progress_interrupted
+        set -e _git_fetch_progress_interrupted
+        rm -f $status_file $pid_file
+        set -e _git_fetch_progress_job
+        return 130
     end
 
     set -l rc 2
@@ -212,6 +221,9 @@ function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an 
     set -l status_file $_git_fetch_progress_job[1]
     set -l wrapper_pid $_git_fetch_progress_job[2]
     set -e _git_fetch_progress_job
+    # Tells a still-running helper loop (non-interactive SIGINT/SIGTERM:
+    # fish does not cancel the function) to return 130 instead of resuming.
+    set -g _git_fetch_progress_interrupted 1
 
     set -l git_pid ''
     if test -r "$status_file.pid"
