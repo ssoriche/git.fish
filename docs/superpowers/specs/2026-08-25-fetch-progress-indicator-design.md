@@ -116,8 +116,11 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   - **`--quiet`:** no output at all (for the `--check` prompt hook).
 - When elapsed ≥ timeout: call `_git_fetch_progress_kill_tree $last_pid
   $git_pid` (where `$git_pid` is read from `$0.pid` and may be empty), then
-  return **124** regardless of what lands in the status file (matches
-  coreutils `timeout`, which callers already test for). The `sh` wrapper then
+  return **124** (matches coreutils `timeout`, which callers already test
+  for) — unless, once the wrapper is seen gone, the status file holds
+  exactly `0`: git then finished on its own just before the deadline (a
+  killed git writes its signal status, never 0), so the helper returns
+  **0**. The `sh` wrapper then
   exits on its own after writing git's signal status, which avoids fish's
   "Job N terminated" notice that SIGTERM-ing the job itself would print in an
   interactive shell. Before removing the scratch files, the timeout path

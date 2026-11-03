@@ -3254,6 +3254,40 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
         set failed_tests (math $failed_tests + 1)
     end
 
+    echo "Test 15: a fetch that succeeds inside the post-kill wait is reported 0, not 124..."
+    set total_tests (math $total_tests + 1)
+    # The deadline can fire just before git exits 0 on its own. A fake git
+    # sleeps past the 1s timeout but well inside the ~2s wait, and a
+    # kill-tree stub kills nothing, so the status file ends up holding 0.
+    # (1.5s: the timeout fires between 0 and ~1.1s after start, so git is
+    # always still running then and always done before the wait ends.)
+    set -l slow_shim $cap_dir/shim-slow
+    mkdir -p $slow_shim
+    for tool in sh mktemp sleep date rm kill ps basename dirname
+        ln -s (command -s $tool) $slow_shim/$tool
+    end
+    printf '%s\n' '#!/bin/sh' 'sleep 1.5' 'exit 0' >$slow_shim/git
+    chmod +x $slow_shim/git
+    function _git_fetch_progress_kill_tree
+        return 0
+    end
+    set -l orig_path $PATH
+    set -lx PATH $slow_shim
+    _git_fetch_progress --quiet --label x --timeout 1 -- origin >/dev/null 2>&1
+    set -l st $status
+    set -lx PATH $orig_path
+    functions -e _git_fetch_progress_kill_tree
+    source $test_functions_dir/_git_fetch_progress.fish
+    set -l leftovers $tmp_dir/*
+    if test $st -eq 0; and test (count $leftovers) -eq 0
+        echo "✅ git's own exit 0 wins over the deadline"
+    else
+        echo "❌ status=$st (expected 0) leftovers=$leftovers"
+        set failed_tests (math $failed_tests + 1)
+    end
+    set -l stray $tmp_dir/*
+    test (count $stray) -gt 0; and rm -f $stray
+
     # Cleanup
     set -e TMPDIR
     cd "$orig_dir"
