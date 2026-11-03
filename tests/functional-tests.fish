@@ -3460,6 +3460,22 @@ function test_git_fetch_progress_callers --description "Test how wclean, wlist, 
     end
     kill -TERM $fake_wrapper 2>/dev/null
 
+    echo "Test 1b: wclean's interrupt handler is silent under --check..."
+    set total_tests (math $total_tests + 1)
+    # A prompt-hook --check must never print, even when interrupted.
+    fish -c "set -p fish_function_path $test_functions_dir
+        source $test_functions_dir/git-wclean.fish
+        set -g _wclean_flag_check 1
+        _wclean_cleanup_handler" >/dev/null 2>$cap_dir/handler1b
+    set -l st $status
+    set -l err (string collect <$cap_dir/handler1b)
+    if test $st -eq 130; and test -z "$err"
+        echo "✅ handler exited 130 with no message under --check"
+    else
+        echo "❌ status=$st stderr='$err'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
     echo "Test 2: git-wclean --check exits 2 silently on 125..."
     set total_tests (math $total_tests + 1)
     git-wclean --check >$cap_dir/check 2>&1
