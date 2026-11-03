@@ -3129,13 +3129,51 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     set -e GIT_SSH_COMMAND
     functions -e _git_fetch_progress_wait_gone
     source $test_functions_dir/_git_fetch_progress.fish
-    if test $st -eq 125
-        echo "✅ unconfirmed wrapper exit downgrades the timeout to 125"
+    # The wrapper outlived the (stubbed) wait, so the helper must have ended
+    # it before removing the files: its trailing echo must not recreate the
+    # status file later.
+    set -l leftovers $tmp_dir/*
+    sleep 1
+    set -l late $tmp_dir/*
+    if test $st -eq 125; and test (count $leftovers) -eq 0; and test (count $late) -eq 0
+        echo "✅ unconfirmed wrapper exit downgrades the timeout to 125, no file reappears"
     else
-        echo "❌ status=$st (expected 125)"
+        echo "❌ status=$st (expected 125) leftovers=$leftovers late=$late"
         set failed_tests (math $failed_tests + 1)
     end
     sleep 0.3
+    pkill -f 'git fetch fp6047' 2>/dev/null
+    pkill -f 'sleep 6047' 2>/dev/null
+    set -l stray $tmp_dir/*
+    test (count $stray) -gt 0; and rm -f $stray
+
+    echo "Test 10b: a wrapper that outlives the wait is ended before the files go..."
+    set total_tests (math $total_tests + 1)
+    # Deterministic form of Test 10's leak check: kill-tree is stubbed too,
+    # so git (and therefore its wrapper) is still alive when the helper
+    # returns. Killing git afterwards would let a surviving wrapper run its
+    # trailing echo and recreate the status file in TMPDIR.
+    function _git_fetch_progress_wait_gone
+        return 1
+    end
+    function _git_fetch_progress_kill_tree
+        return 0
+    end
+    set -lx GIT_SSH_COMMAND 'sh -c "sleep 6047"'
+    _git_fetch_progress --quiet --label x --timeout 1 -- fp6047 >/dev/null 2>&1
+    set -l st $status
+    set -e GIT_SSH_COMMAND
+    functions -e _git_fetch_progress_wait_gone _git_fetch_progress_kill_tree
+    source $test_functions_dir/_git_fetch_progress.fish
+    pkill -f 'git fetch fp6047' 2>/dev/null
+    sleep 1
+    set -l late $tmp_dir/*
+    if test $st -eq 125; and test (count $late) -eq 0
+        echo "✅ surviving wrapper was ended; no status file reappeared"
+    else
+        echo "❌ status=$st (expected 125) late=$late"
+        set failed_tests (math $failed_tests + 1)
+    end
     pkill -f 'git fetch fp6047' 2>/dev/null
     pkill -f 'sleep 6047' 2>/dev/null
     set -l stray $tmp_dir/*
@@ -3157,12 +3195,14 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     functions -e _git_fetch_progress_wait_gone
     source $test_functions_dir/_git_fetch_progress.fish
     set -l leftovers $tmp_dir/*
-    if test $st -eq 130; and test (count $leftovers) -eq 0
+    sleep 1
+    set -l late $tmp_dir/*
+    if test $st -eq 130; and test (count $leftovers) -eq 0; and test (count $late) -eq 0
         and not set -q _git_fetch_progress_interrupted
         and not set -q _git_fetch_progress_job
         echo "✅ interrupt during the timeout wait returns 130 and cleans up"
     else
-        echo "❌ status=$st (expected 130) leftovers=$leftovers"
+        echo "❌ status=$st (expected 130) leftovers=$leftovers late=$late"
         set failed_tests (math $failed_tests + 1)
     end
     pkill -f 'sleep 6047' 2>/dev/null
