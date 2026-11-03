@@ -88,10 +88,12 @@ source functions/git-wadd.fish
 - `_git_fetch_progress`: The one fetch runner for `git-wclean` (full and
   `--check`), `git-wlist`, and `git-wrm`. Backgrounds `git fetch` in an
   external `sh` wrapper, draws a spinner (TTY) or one label line (non-TTY)
-  on stderr, enforces the timeout itself, and returns 0/2/124/125. It prints
-  no warnings (callers own those). 125 = timed out but not confirmed dead:
-  `git-wclean`/`git-wrm` abort with exit 2, `git-wlist` warns. INT/TERM
-  handlers in the same file kill the fetch tree and remove the scratch files.
+  on stderr, enforces the timeout itself, and returns 0/2/124/125/130. It
+  prints no warnings (callers own those). 125 = timed out but not confirmed
+  dead: `git-wclean`/`git-wrm` abort with exit 2, `git-wlist` warns. INT/TERM
+  handlers and a `fish_postexec` hook (interactive Ctrl-C never reaches fish)
+  kill the fetch tree and remove the scratch files; 130 = interrupted, and
+  every caller stops with 130.
 
 **Branch management**
 - `git-bclean`: Clean up merged local branches with pattern exclusion support
