@@ -157,8 +157,9 @@ function _git_fetch_progress --description "Run git fetch in the background with
         # Let the wrapper finish its trailing 'echo $? >"$0"' before the
         # scratch files go, or it would recreate the status file afterwards.
         # The wrapper only exits once git does, so one still alive after
-        # ~2s means the fetch is not confirmed stopped: report 125.
-        if not _git_fetch_progress_wait_gone $wrapper_pid
+        # ~2s means the fetch is not confirmed stopped: report 125 (the reap
+        # then ends the wrapper itself so it cannot write after the rm).
+        if not _git_fetch_progress_reap $wrapper_pid
             set rc 125
         else
             # git may have exited 0 on its own just before the deadline; a
@@ -267,6 +268,20 @@ function _git_fetch_progress_wait_gone --description "Wait up to ~2s for a pid t
     return 1
 end
 
+function _git_fetch_progress_reap --description "Wait for the wrapper; end it if it outlives the wait"
+    # Called after the kill, before the scratch files are removed. A wrapper
+    # still alive after ~2s would later run its trailing 'echo $? >"$0"' and
+    # recreate the status file, so SIGTERM it (it is a shell blocked in
+    # 'wait'; TERM ends it before the echo) and wait once more. Returns 0
+    # when the wrapper went away on its own, 1 when it outlived the first
+    # wait (git is then not confirmed stopped, even if the TERM worked).
+    _git_fetch_progress_wait_gone $argv[1]
+    and return 0
+    kill -TERM $argv[1] 2>/dev/null
+    _git_fetch_progress_wait_gone $argv[1]
+    return 1
+end
+
 function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an in-flight _git_fetch_progress job"
     # When fish itself receives the signal, the handler runs this and the
     # helper then sees the interrupted flag and returns 130. Interactively the
@@ -288,7 +303,7 @@ function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an 
     end
     _git_fetch_progress_kill_tree $wrapper_pid $git_pid
     or kill -TERM $wrapper_pid 2>/dev/null
-    _git_fetch_progress_wait_gone $wrapper_pid
+    _git_fetch_progress_reap $wrapper_pid
     if isatty stderr
         printf '\r\033[K' >&2
     end

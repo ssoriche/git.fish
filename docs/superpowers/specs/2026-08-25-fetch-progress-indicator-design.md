@@ -129,7 +129,13 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   recreate the status file and leak it in `$TMPDIR`. Because the wrapper
   exits only once git has, a wrapper still alive after that bounded wait
   means git is not confirmed dead: the helper then returns **125** instead
-  of 124, so 124 is reported only once the wrapper is seen gone.
+  of 124, so 124 is reported only once the wrapper is seen gone. Both this
+  wait and the abort's go through `_git_fetch_progress_reap <wrapper-pid>`:
+  when the wrapper outlives the ~2s wait it SIGTERMs the wrapper (a shell
+  blocked in `wait`, which TERM ends before its trailing `echo`) and waits
+  once more, so the files are never removed under a live wrapper that
+  would recreate the status file. It returns 1 whenever the first wait
+  failed (the 125 signal), 0 when the wrapper went away on its own.
   - *`_git_fetch_progress_kill_tree <wrapper-pid> [<git-pid>]`* is a private
     function in the same file so the test suite can drive its fallbacks
     directly. It builds a kill set from two independent sources and SIGTERMs
@@ -191,7 +197,7 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   spawned and erased on every return path), erases it, sets the global
   flag `_git_fetch_progress_interrupted`, runs
   `_git_fetch_progress_kill_tree` with the wrapper pid and the pid-file
-  contents, waits briefly for the wrapper as the timeout path does, clears
+  contents, reaps the wrapper as the timeout path does, clears
   the spinner line when stderr is a TTY, and removes both scratch files.
   When the job global is unset the abort is a no-op, so every hook below is
   inert outside a fetch. The abort is reached two ways, because fish
