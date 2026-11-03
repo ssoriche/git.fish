@@ -55,9 +55,16 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   job must be a single external command:
 
   ```fish
-  sh -c 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1 &
-         echo $! >"$0.pid"; wait $!; echo $? >"$0"' \
+  sh -c (_git_fetch_progress_wrapper_script | string collect) \
       $status_file $fetch_args 2>/dev/null &
+  ```
+
+  where the private `_git_fetch_progress_wrapper_script` prints the script
+  (one function, so the tests drive exactly what the helper runs):
+
+  ```sh
+  GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git fetch "$@" >/dev/null 2>&1 &
+  (set -C; echo $! >"$0.pid") 2>/dev/null; wait $!; echo $? >"$0"
   ```
 
   The scratch status file carries the fetch's exit status. It is created
@@ -72,7 +79,12 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   fetch` pid in `$0.pid` via POSIX `$!` before `wait`ing on it, so the
   helper can target the git process directly on the timeout path without
   any process-table tool (`pgrep` was the previous design; `$!` has no
-  dependency and cannot race with git forking). The outer `2>/dev/null`
+  dependency and cannot race with git forking). `$0` comes from `mktemp`
+  but `$0.pid` is a predictable name, so that one write runs under
+  noclobber (`set -C`, scoped to a subshell): a path planted there by
+  another user of a shared `TMPDIR` (file or symlink, dangling or not) is
+  refused rather than followed, and the pid file is simply absent; the
+  kill never relies on the pid file alone. The outer `2>/dev/null`
   matters too: it silences the wrapper's own job notice
   (`Terminated: 15  git fetch …`) that `sh` otherwise prints to the
   inherited stderr when its child is killed on the timeout path.
@@ -84,9 +96,12 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   status file: `0` → return 0; anything else, including an empty or missing
   file (the exact symptom of a wrapper plumbing bug) → return 2.
 - `GIT_TERMINAL_PROMPT=0` applies at every call site (today only `--check`
-  sets it). This is an intended behavior change: a fetch that would have
-  prompted for credentials now fails and the caller warns — a background job
-  can't take a prompt anyway.
+  sets it), together with an empty `GIT_ASKPASS` and `SSH_ASKPASS`:
+  `GIT_TERMINAL_PROMPT=0` only stops terminal prompts, while git still runs
+  an askpass helper (`GIT_ASKPASS`, `core.askPass`, `SSH_ASKPASS`) unless
+  `GIT_ASKPASS` is set but empty. This is an intended behavior change: a
+  fetch that would have prompted for credentials now fails and the caller
+  warns — a background job can't take a prompt anyway.
 - All indicator output goes to **stderr** (git's own convention for progress),
   so piped stdout — notably `git wlist | …` — never gains a progress line.
   TTY detection is therefore `isatty stderr`.

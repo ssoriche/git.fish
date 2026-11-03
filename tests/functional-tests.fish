@@ -3222,6 +3222,38 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     end
     rm -f $sl_status "$sl_status.pid" $sl_canary
 
+    echo "Test 14: the fetch runs with askpass disabled as well as terminal prompts..."
+    set total_tests (math $total_tests + 1)
+    # GIT_TERMINAL_PROMPT=0 alone still lets git run GIT_ASKPASS/SSH_ASKPASS
+    # (a GUI dialog); git skips askpass when GIT_ASKPASS is set but empty. A
+    # fake git records the environment it was started with.
+    set -l env_shim $cap_dir/shim-env
+    set -l env_log $cap_dir/git-env.log
+    mkdir -p $env_shim
+    for tool in sh mktemp sleep date rm kill ps basename dirname
+        ln -s (command -s $tool) $env_shim/$tool
+    end
+    printf '%s\n' '#!/bin/sh' \
+        "printf 'TP=%s AP=[%s] SP=[%s]\\n' \"\$GIT_TERMINAL_PROMPT\" \"\$GIT_ASKPASS\" \"\$SSH_ASKPASS\" >>$env_log" \
+        'exit 0' >$env_shim/git
+    chmod +x $env_shim/git
+    set -l orig_path $PATH
+    set -lx GIT_ASKPASS /bin/echo
+    set -lx SSH_ASKPASS /bin/echo
+    set -lx PATH $env_shim
+    _git_fetch_progress --quiet --label x --timeout 10 -- origin >/dev/null 2>&1
+    set -l st $status
+    set -lx PATH $orig_path
+    set -e GIT_ASKPASS
+    set -e SSH_ASKPASS
+    set -l env_text (string collect <$env_log 2>/dev/null)
+    if test $st -eq 0; and test "$env_text" = "TP=0 AP=[] SP=[]"
+        echo "✅ git saw GIT_TERMINAL_PROMPT=0 with empty GIT_ASKPASS and SSH_ASKPASS"
+    else
+        echo "❌ status=$st env='$env_text'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
     # Cleanup
     set -e TMPDIR
     cd "$orig_dir"
