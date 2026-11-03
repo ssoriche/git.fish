@@ -96,8 +96,7 @@ function _git_fetch_progress --description "Run git fetch in the background with
     # Single external command so fish can background it (fish never forks
     # for blocks or functions). The trailing 2>/dev/null silences sh's own
     # "Terminated" job notice when git is killed on the timeout path.
-    sh -c 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1 &
-        echo $! >"$0.pid"; wait $!; echo $? >"$0"' $status_file $argv 2>/dev/null &
+    sh -c (_git_fetch_progress_wrapper_script | string collect) $status_file $argv 2>/dev/null &
     set -l wrapper_pid $last_pid
     set -g _git_fetch_progress_job $status_file $wrapper_pid
 
@@ -180,6 +179,18 @@ function _git_fetch_progress --description "Run git fetch in the background with
     rm -f $status_file $pid_file
     set -e _git_fetch_progress_job
     return $rc
+end
+
+function _git_fetch_progress_wrapper_script --description "Print the sh script that runs the fetch"
+    # Run as: sh -c <script> <status-file> <git-fetch-args...>. Its $0 is the
+    # status file: git's pid goes to "$0.pid", git's exit status to "$0".
+    # Kept in one function so the tests drive the exact script the helper runs.
+    # "$0" comes from mktemp but "$0.pid" is predictable, so the pid write is
+    # under noclobber (set -C, scoped to a subshell): a path planted there
+    # (file or symlink, dangling or not) is refused and the pid file is just
+    # absent. The kill never relies on the pid file alone (the ps walk).
+    printf '%s\n' 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1 &' \
+        '(set -C; echo $! >"$0.pid") 2>/dev/null; wait $!; echo $? >"$0"'
 end
 
 function _git_fetch_progress_kill_tree --description "SIGTERM wrapper descendants and/or git pid"
