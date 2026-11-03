@@ -23,7 +23,7 @@ function git-wlist --description "List git worktrees with lifecycle state"
     #   Rows are sorted in that state order, oldest first within each state.
     #   Git's own locked/prunable annotations are appended to the NAME column.
     #   Runs one 'git fetch --prune origin' up front, bounded by the
-    #   _wclean_config_fetch_timeout setting (no timeout utility needed).
+    #   _wclean_config_fetch_timeout setting.
     #
     #   Reads the same config as git-wclean (~/.config/git-wclean/config or
     #   ~/.git-wclean-config) but never the repo-local ./.git-wclean-config.
