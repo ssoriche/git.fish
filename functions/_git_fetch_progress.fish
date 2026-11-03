@@ -24,7 +24,8 @@ function _git_fetch_progress --description "Run git fetch in the background with
     # EXIT STATUS
     #   0    Fetch succeeded
     #   1    Invalid arguments
-    #   2    Fetch failed (also: mktemp failed, or the status file came back empty)
+    #   2    Fetch failed (also: mktemp failed under both TMPDIR and /tmp, or the
+    #        status file came back empty)
     #   124  Timed out; the fetch process tree was killed and the wrapper
     #        (which exits only once git has) was seen gone
     #   125  Timed out; the fetch could not be confirmed stopped (no ps AND no
@@ -80,8 +81,12 @@ function _git_fetch_progress --description "Run git fetch in the background with
     # BSD mktemp ignores $TMPDIR without a template, so build the path here.
     if test -n "$TMPDIR"
         set tmp_base (string replace -r '/+$' '' -- $TMPDIR)
+        # TMPDIR=/ trims to nothing
+        test -n "$tmp_base"; or set tmp_base /tmp
     end
-    set -l status_file (mktemp $tmp_base/git-fish-fetch.XXXXXX 2>/dev/null)
+    # An unusable TMPDIR (missing, unwritable) falls back to /tmp.
+    set -l status_file (mktemp "$tmp_base/git-fish-fetch.XXXXXX" 2>/dev/null)
+    or set status_file (mktemp /tmp/git-fish-fetch.XXXXXX 2>/dev/null)
     or return 2
     set -l pid_file "$status_file.pid"
 

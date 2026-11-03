@@ -2827,6 +2827,19 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
         set failed_tests (math $failed_tests + 1)
     end
 
+    echo "Test 2a: unusable TMPDIR falls back to /tmp instead of failing..."
+    set total_tests (math $total_tests + 1)
+    set -lx TMPDIR /nonexistent-git-fish-(random)
+    _git_fetch_progress --quiet --label x --timeout 10 -- --prune origin >/dev/null 2>&1
+    set -l st $status
+    set -lx TMPDIR $tmp_dir
+    if test $st -eq 0
+        echo "✅ mktemp retried under /tmp and the fetch succeeded"
+    else
+        echo "❌ status=$st with a missing TMPDIR"
+        set failed_tests (math $failed_tests + 1)
+    end
+
     echo "Test 3: argument validation -> 1..."
     set total_tests (math $total_tests + 1)
     set -l misses 0
