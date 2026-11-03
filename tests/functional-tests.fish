@@ -3122,7 +3122,7 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     return $failed_tests
 end
 
-function test_git_fetch_progress_callers --description "Test how wclean, wlist, and wrm react to an unconfirmed fetch timeout (125)"
+function test_git_fetch_progress_callers --description "Test how wclean, wlist, and wrm react to fetch statuses 125 and 130"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
         set -l test_file_dir (dirname (status --current-filename))
@@ -3256,6 +3256,62 @@ function test_git_fetch_progress_callers --description "Test how wclean, wlist, 
         echo "✅ wrm refused to remove with exit 2"
     else
         echo "❌ status=$st exists="(test -d "$wts_dir/merged"; and echo yes; or echo no)" pwd_before=$pwd_before pwd_after=$pwd_after output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Second stub round: 130 means the user interrupted the fetch, so every
+    # caller must stop at once with 130 and touch nothing.
+    function _git_fetch_progress
+        return 130
+    end
+
+    echo "Test 5: git-wclean stops with 130 on an interrupted fetch, removes nothing..."
+    set total_tests (math $total_tests + 1)
+    echo y | git-wclean "$wts_dir" >$cap_dir/wclean5 2>&1
+    set -l st $status
+    if test $st -eq 130; and test -d "$wts_dir/merged"
+        echo "✅ wclean exited 130 with the worktree intact"
+    else
+        echo "❌ status=$st exists="(test -d "$wts_dir/merged"; and echo yes; or echo no)" output: "(string collect <$cap_dir/wclean5)
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 6: git-wclean --check exits 130 silently on an interrupted fetch..."
+    set total_tests (math $total_tests + 1)
+    git-wclean --check >$cap_dir/check6 2>&1
+    set -l st $status
+    set -l out (string collect <$cap_dir/check6)
+    if test $st -eq 130; and test -z "$out"
+        echo "✅ --check: exit 130, no output"
+    else
+        echo "❌ status=$st output='$out'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 7: git-wlist exits 130 on an interrupted fetch..."
+    set total_tests (math $total_tests + 1)
+    git-wlist >$cap_dir/wlist7 2>&1
+    set -l st $status
+    set -l out (string collect <$cap_dir/wlist7)
+    if test $st -eq 130; and not string match -q '*NAME*' -- $out
+        echo "✅ wlist: exit 130, no table"
+    else
+        echo "❌ status=$st output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 8: git-wrm exits 130 on an interrupted fetch, worktree kept, cwd unchanged..."
+    set total_tests (math $total_tests + 1)
+    set -l pwd_before $PWD
+    git-wrm "$wts_dir/merged" >$cap_dir/wrm8 2>&1
+    set -l st $status
+    set -l pwd_after $PWD
+    if test $st -eq 130
+        and test -d "$wts_dir/merged"
+        and test "$pwd_before" = "$pwd_after"
+        echo "✅ wrm exited 130 without removing anything"
+    else
+        echo "❌ status=$st exists="(test -d "$wts_dir/merged"; and echo yes; or echo no)" pwd_before=$pwd_before pwd_after=$pwd_after output: "(string collect <$cap_dir/wrm8)
         set failed_tests (math $failed_tests + 1)
     end
 

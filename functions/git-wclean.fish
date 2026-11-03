@@ -301,6 +301,7 @@ function _wclean_fetch_remotes
     # ours. 125 means the timed-out fetch could not be confirmed dead: a
     # fetch that may still be rewriting remote-tracking refs must not race a
     # branch deletion, so the whole run aborts (main maps this to exit 2).
+    # 130 (interrupted) aborts too, and main passes 130 through.
     if contains origin $_wclean_remotes
         _git_fetch_progress --label "Fetching from origin" \
             --timeout $_wclean_config_fetch_timeout -- --prune origin
@@ -313,6 +314,8 @@ function _wclean_fetch_remotes
                 printf "Error: Fetch from origin timed out after %ds and could not be confirmed stopped.\n" $_wclean_config_fetch_timeout >&2
                 printf "Refusing to remove anything while that fetch may still be running.\n" >&2
                 return 2
+            case 130
+                return 130
             case '*'
                 printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
         end
@@ -831,11 +834,15 @@ function _wclean_run_check
     # --quiet (a prompt hook must never draw). GIT_TERMINAL_PROMPT=0 is set
     # inside the helper. 125 (timed out, fetch not confirmed dead) exits 2
     # silently: the nudge must not be computed from refs still in flux.
+    # 130 (interrupted) exits 130, also silently.
     if contains origin (git remote 2>/dev/null)
         _git_fetch_progress --quiet --label "Fetching from origin" \
             --timeout $_wclean_config_fetch_timeout -- --prune origin
-        if test $status -eq 125
-            return 2
+        switch $status
+            case 125
+                return 2
+            case 130
+                return 130
         end
     end
 
@@ -1053,8 +1060,11 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     end
 
     # Fetch remote updates and determine the integration branch
-    if not _wclean_fetch_remotes
+    _wclean_fetch_remotes
+    set -l fetch_rc $status
+    if test $fetch_rc -ne 0
         _wclean_normal_cleanup
+        test $fetch_rc -eq 130; and return 130
         return 2
     end
 

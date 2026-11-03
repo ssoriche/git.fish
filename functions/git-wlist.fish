@@ -47,6 +47,7 @@ function git-wlist --description "List git worktrees with lifecycle state"
     #   0    Success
     #   1    Invalid arguments
     #   2    Git command failed or not inside a git repository
+    #   130  Interrupted (Ctrl-C during the fetch)
     argparse --name=git-wlist h/help 's/stale-days=' -- $argv
     or return 1
 
@@ -87,7 +88,8 @@ function git-wlist --description "List git worktrees with lifecycle state"
     # One fetch --prune through the shared helper (native timeout, spinner on
     # a TTY, label line otherwise - all on stderr so piped stdout stays a
     # clean table). wlist is read-only, so even an unconfirmed timeout (125)
-    # only costs freshness: warn and carry on.
+    # only costs freshness: warn and carry on. 130 (interrupted) prints no
+    # table.
     if contains origin (git remote 2>/dev/null)
         _git_fetch_progress --label "Fetching from origin" \
             --timeout $_wclean_config_fetch_timeout -- --prune origin
@@ -95,6 +97,8 @@ function git-wlist --description "List git worktrees with lifecycle state"
             case 0
             case 124 125
                 printf "warning: fetch timed out; results may be stale\n" >&2
+            case 130
+                return 130
             case '*'
                 printf "warning: fetch failed; results may be stale\n" >&2
         end
