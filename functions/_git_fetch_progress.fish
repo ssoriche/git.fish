@@ -28,14 +28,22 @@ function _git_fetch_progress --description "Run git fetch in the background with
     #   124  Timed out; the fetch process tree was killed
     #   125  Timed out; the fetch could not be confirmed stopped (no ps AND no
     #        pid file). Callers that go on to delete things must abort.
+    #   130  Interrupted (SIGINT/SIGTERM reached fish); the fetch was killed
     #
     # NOTES
     #   - GIT_TERMINAL_PROMPT=0 is always set: a background job cannot answer a
     #     credential prompt, so such a fetch fails instead of hanging.
-    #   - Ctrl-C / SIGTERM run _git_fetch_progress_abort through the handlers
-    #     at the bottom of this file: the fetch tree is killed and both scratch
-    #     files are removed. The only global, _git_fetch_progress_job, exists
-    #     only while a fetch is in flight.
+    #   - Interruption. _git_fetch_progress_abort kills the fetch tree and
+    #     removes both scratch files; it is reached two ways:
+    #     * Interactive Ctrl-C goes to the foreground external command (the
+    #       spinner's sleep), not to fish, so the INT handler never runs and
+    #       fish abandons this function. The fish_postexec hook at the bottom
+    #       of this file runs the abort after that cancelled command line.
+    #     * When fish itself receives SIGINT/SIGTERM (scripts, CI, kill), the
+    #       signal handlers run the abort, but fish does not cancel the
+    #       function: the loop sees _git_fetch_progress_interrupted, and the
+    #       helper returns 130.
+    #     _git_fetch_progress_job exists only while a fetch is in flight.
     argparse --name=_git_fetch_progress 'label=' 'timeout=' q/quiet -- $argv
     or return 1
 
@@ -51,6 +59,10 @@ function _git_fetch_progress --description "Run git fetch in the background with
         printf '_git_fetch_progress: no git fetch arguments given\n' >&2
         return 1
     end
+
+    # A stale flag (an abort with no loop to consume it) must not cut this
+    # fetch short.
+    set -e _git_fetch_progress_interrupted
 
     set -l quiet 0
     set -q _flag_quiet; and set quiet 1
@@ -246,4 +258,14 @@ end
 
 function _git_fetch_progress_on_term --on-signal TERM
     _git_fetch_progress_abort
+end
+
+# Interactively, Ctrl-C goes to the foreground external command (sleep), not
+# to fish, so the INT handler above never runs; fish just abandons the
+# function. fish_postexec fires after that cancelled command line, and the
+# abort is a no-op unless a job is still registered. No helper loop is left
+# to consume the interrupted flag here, so clear it too.
+function _git_fetch_progress_on_postexec --on-event fish_postexec
+    _git_fetch_progress_abort
+    set -e _git_fetch_progress_interrupted
 end
