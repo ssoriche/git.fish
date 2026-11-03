@@ -1018,9 +1018,10 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   2    Git command failed
     #   130  Interrupted by user (Ctrl+C)
     #
-    #   Under --check, runtime conditions (not a repo, fetch failure or
-    #   timeout) exit 0; invalid flag combinations exit 1; a timed-out fetch
-    #   that could not be confirmed stopped exits 2 (silently).
+    #   Under --check, invalid flag combinations exit 1; a timed-out fetch
+    #   that could not be confirmed stopped exits 2 and an interrupt exits
+    #   130, both silently. Every other runtime condition (not a repo, fetch
+    #   failure, confirmed timeout) exits 0, counting local refs as they are.
 
     # Store original directory for cleanup
     set -g _wclean_original_dir (pwd)
