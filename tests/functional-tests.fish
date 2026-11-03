@@ -3395,6 +3395,52 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     set -e _git_fetch_progress_job
     rm -f $cap_dir/planted $cap_dir/planted-status $cap_dir/planted-status.pid
 
+    echo "Test 17: TERM to the wrapper alone reaches git, and the wrapper waits for it..."
+    set total_tests (math $total_tests + 1)
+    # Without ps and a trusted pid file the only kill left is TERM to the
+    # wrapper sh. It must forward that to git and exit only once git has,
+    # so "wrapper gone" still means "git gone". Drive the real script. The
+    # transport is not asserted: git does not pass TERM on to it (see the
+    # spec), so only the ps walk reaches it; it is killed in the cleanup.
+    set -l fwd_status $cap_dir/fwd-status
+    rm -f $fwd_status "$fwd_status.pid"
+    set -lx GIT_SSH_COMMAND 'sh -c "sleep 6047"'
+    sh -c (_git_fetch_progress_wrapper_script | string collect) $fwd_status fp6047 >/dev/null 2>&1 &
+    set -l fwd_wrapper $last_pid
+    set -e GIT_SSH_COMMAND
+    for _i in (seq 1 30)
+        test -e "$fwd_status.pid"; and break
+        sleep 0.1
+    end
+    # Give git a moment to spawn its transport.
+    sleep 0.3
+    kill -TERM $fwd_wrapper 2>/dev/null
+    set -l wrapper_alive 1
+    for _i in (seq 1 30)
+        if not kill -0 $fwd_wrapper 2>/dev/null
+            set wrapper_alive 0
+            break
+        end
+        sleep 0.1
+    end
+    sleep 0.3
+    set -l gitproc (pgrep -f 'git fetch fp6047')
+    set -l fwd_rc ''
+    test -r $fwd_status; and set fwd_rc (string trim <$fwd_status)
+    if test $wrapper_alive -eq 0
+        and test -z "$gitproc"
+        and string match -qr '^[0-9]+$' -- "$fwd_rc"
+        and test "$fwd_rc" -gt 128
+        echo "✅ wrapper forwarded TERM, waited for git, and wrote status $fwd_rc"
+    else
+        echo "❌ wrapper_alive=$wrapper_alive git='$gitproc' rc='$fwd_rc'"
+        set failed_tests (math $failed_tests + 1)
+    end
+    kill -TERM $fwd_wrapper 2>/dev/null
+    pkill -f 'git fetch fp6047' 2>/dev/null
+    pkill -f 'sleep 6047' 2>/dev/null
+    rm -f $fwd_status "$fwd_status.pid"
+
     # Cleanup
     set -e TMPDIR
     cd "$orig_dir"
