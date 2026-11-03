@@ -162,7 +162,7 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   alive after the bounded wait following the kill). Callers keep ownership of
   user-facing success/warning lines — the helper draws only the in-progress
   indicator.
-- **Interruption (Ctrl-C / SIGTERM):** the background job has its own
+- **Interruption (Ctrl-C / SIGTERM):** interactively the background job has its own
   process group, so without handling the wrapper and `git fetch` would
   outlive an interrupted command with no timeout enforcer left alive, and
   both scratch files would leak — a regression from today's
