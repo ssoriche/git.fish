@@ -25,9 +25,11 @@ function _git_fetch_progress --description "Run git fetch in the background with
     #   0    Fetch succeeded
     #   1    Invalid arguments
     #   2    Fetch failed (also: mktemp failed, or the status file came back empty)
-    #   124  Timed out; the fetch process tree was killed
+    #   124  Timed out; the fetch process tree was killed and the wrapper
+    #        (which exits only once git has) was seen gone
     #   125  Timed out; the fetch could not be confirmed stopped (no ps AND no
-    #        pid file). Callers that go on to delete things must abort.
+    #        pid file, or the wrapper still alive ~2s after the kill).
+    #        Callers that go on to delete things must abort.
     #   130  Interrupted (SIGINT/SIGTERM reached fish); the fetch was killed
     #
     # NOTES
@@ -143,7 +145,11 @@ function _git_fetch_progress --description "Run git fetch in the background with
         end
         # Let the wrapper finish its trailing 'echo $? >"$0"' before the
         # scratch files go, or it would recreate the status file afterwards.
-        _git_fetch_progress_wait_gone $wrapper_pid
+        # The wrapper only exits once git does, so one still alive after
+        # ~2s means the fetch is not confirmed stopped: report 125.
+        if not _git_fetch_progress_wait_gone $wrapper_pid
+            set rc 125
+        end
     else
         # Explicit reap on the normal path; the wrapper is already gone so
         # this returns at once, and fish's wait does not carry the status,
