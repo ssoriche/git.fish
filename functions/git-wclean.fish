@@ -2,6 +2,10 @@
 
 # Signal handling for clean shutdown - shared cleanup logic
 function _wclean_cleanup_handler
+    # Stop an in-flight fetch before we exit; the helper's own INT/TERM
+    # handlers may not run because this one ends in exit 130.
+    functions -q _git_fetch_progress_abort; and _git_fetch_progress_abort
+
     # Restore original directory if we're in a different one. Skip the cd
     # entirely when we're already there: fish fires PWD event handlers
     # (zoxide, direnv, user hooks) even on a same-directory cd, and their
@@ -291,37 +295,26 @@ function _wclean_fetch_remotes
         set -g _wclean_remotes ""
     end
 
-    # Try to fetch from origin if it exists. Guard the fetch with a timeout
-    # utility when one is available (`timeout` on Linux, `gtimeout` from GNU
-    # coreutils on macOS); otherwise fetch without a timeout rather than failing
-    # on the missing command.
+    # Fetch from origin when it exists. _git_fetch_progress runs the fetch in
+    # the background with its own timeout and spinner; its exit status is
+    # the whole signal (it prints no warnings), so every user-facing line is
+    # ours. 125 means the timed-out fetch could not be confirmed dead: a
+    # fetch that may still be rewriting remote-tracking refs must not race a
+    # branch deletion, so the whole run aborts (main maps this to exit 2).
     if contains origin $_wclean_remotes
-        set -l timeout_cmd
-        if command -q timeout
-            set timeout_cmd timeout
-        else if command -q gtimeout
-            set timeout_cmd gtimeout
-        end
-
-        if test -n "$timeout_cmd"
-            printf "Fetching from origin (timeout: %ds)...\n" $_wclean_config_fetch_timeout
-            if $timeout_cmd $_wclean_config_fetch_timeout git fetch --prune origin >/dev/null 2>&1
+        _git_fetch_progress --label "Fetching from origin" \
+            --timeout $_wclean_config_fetch_timeout -- --prune origin
+        switch $status
+            case 0
                 printf "✓ Fetched from origin\n"
-            else
-                set -l fetch_status $status
-                if test $fetch_status -eq 124 # timeout exit code
-                    printf "⚠️  Warning: Fetch from origin timed out after %ds. Proceeding with local information.\n" $_wclean_config_fetch_timeout
-                else
-                    printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
-                end
-            end
-        else
-            printf "Fetching from origin (no timeout utility found)...\n"
-            if git fetch --prune origin >/dev/null 2>&1
-                printf "✓ Fetched from origin\n"
-            else
+            case 124
+                printf "⚠️  Warning: Fetch from origin timed out after %ds. Proceeding with local information.\n" $_wclean_config_fetch_timeout
+            case 125
+                printf "Error: Fetch from origin timed out after %ds and could not be confirmed stopped.\n" $_wclean_config_fetch_timeout >&2
+                printf "Refusing to remove anything while that fetch may still be running.\n" >&2
+                return 2
+            case '*'
                 printf "⚠️  Warning: Failed to fetch from origin. Proceeding with local information.\n"
-            end
         end
     else
         printf "⚠️  Note: No 'origin' remote found.\n"
@@ -834,18 +827,16 @@ function _wclean_run_check
     git rev-parse --git-dir >/dev/null 2>&1
     or return 0
 
-    # Fetch guard: only fetch when a timeout utility exists — an unbounded
-    # fetch is unacceptable in a prompt hook. Otherwise classify against the
-    # last-fetched state. GIT_TERMINAL_PROMPT=0 stops git from talking to
-    # /dev/tty directly for credentials — the timeout alone only bounds
-    # duration, not interactivity, and a stalled or garbled prompt hook is
-    # unacceptable.
-    set -l timeout_cmd
-    command -q timeout; and set timeout_cmd timeout
-    test -z "$timeout_cmd"; and command -q gtimeout; and set timeout_cmd gtimeout
-    if contains origin (git remote 2>/dev/null); and test -n "$timeout_cmd"
-        $timeout_cmd $_wclean_config_fetch_timeout env GIT_TERMINAL_PROMPT=0 \
-            git fetch --prune origin >/dev/null 2>&1
+    # Always fetch, bounded by the helper's native timeout and silent under
+    # --quiet (a prompt hook must never draw). GIT_TERMINAL_PROMPT=0 is set
+    # inside the helper. 125 (timed out, fetch not confirmed dead) exits 2
+    # silently: the nudge must not be computed from refs still in flux.
+    if contains origin (git remote 2>/dev/null)
+        _git_fetch_progress --quiet --label "Fetching from origin" \
+            --timeout $_wclean_config_fetch_timeout -- --prune origin
+        if test $status -eq 125
+            return 2
+        end
     end
 
     # Integration branch: config override wins; otherwise origin/HEAD
@@ -1013,8 +1004,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   2    Git command failed
     #   130  Interrupted by user (Ctrl+C)
     #
-    #   Under --check, runtime conditions (not a repo, fetch failure) always
-    #   exit 0; only invalid flag combinations exit 1.
+    #   Under --check, runtime conditions (not a repo, fetch failure or
+    #   timeout) exit 0; invalid flag combinations exit 1; a timed-out fetch
+    #   that could not be confirmed stopped exits 2 (silently).
 
     # Store original directory for cleanup
     set -g _wclean_original_dir (pwd)
@@ -1038,8 +1030,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     if set -q _wclean_flag_check
         _git_wclean_config --quiet
         _wclean_run_check
+        set -l check_status $status
         _wclean_normal_cleanup
-        return 0
+        return $check_status
     end
 
     # Load configuration (full runs may opt into repo-local config)
