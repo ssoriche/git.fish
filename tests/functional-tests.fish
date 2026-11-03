@@ -1699,6 +1699,24 @@ function test_git_wclean_config_helper --description "Test _git_wclean_config de
         set failed_tests (math $failed_tests + 1)
     end
 
+    # Test 6: a fetch timeout the helper would reject falls back to 30 with a
+    # warning (coreutils timeout once accepted 1.5; _git_fetch_progress does not)
+    echo "Test 6: invalid fetch timeout -> 30 with a warning..."
+    set total_tests (math $total_tests + 1)
+    printf 'set -g _wclean_config_fetch_timeout 1.5\n' >"$fake_home/.config/git-wclean/config"
+    set -l cfg_err (_git_wclean_config 2>&1 >/dev/null)
+    _git_wclean_config 2>/dev/null
+    set -l loud_value $_wclean_config_fetch_timeout
+    set -l quiet_err (_git_wclean_config --quiet 2>&1)
+    if test "$loud_value" = 30
+        and string match -q "*warning: _wclean_config_fetch_timeout '1.5' is not a whole number*" -- "$cfg_err"
+        and test -z "$quiet_err"
+        echo "✅ 1.5 replaced by 30; warning shown, and suppressed under --quiet"
+    else
+        echo "❌ value=$loud_value stderr='$cfg_err' quiet='$quiet_err'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
     # Cleanup
     set -lx HOME $orig_home
     cd "$orig_dir"
