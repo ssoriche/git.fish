@@ -309,7 +309,7 @@ git wlist --stale-days 7
 - Shows branch, dirty flag, and age in days since the last commit
 - Sorted by state, oldest first within each state
 - Runs a single `git fetch --prune origin` up front, bounded by the fetch
-  timeout config when a timeout utility is available
+  timeout config (enforced natively; no `timeout` utility needed)
 
 ### Utility Commands
 
@@ -375,9 +375,11 @@ function fish_greeting
 end
 ```
 
-`--check` prints at most one line, only when something is reapable, always
-exits 0, never runs `gh`, never sources repo-local config, and skips the
-fetch entirely when no `timeout`/`gtimeout` utility is installed.
+`--check` prints at most one line, only when something is reapable, never runs
+`gh`, never sources repo-local config, and always fetches with the configured
+timeout. It exits 0 in every runtime condition except one: a timed-out fetch
+that could not be confirmed stopped exits 2 (still silently), so a stale ref
+set is never counted.
 
 ## Common Workflows
 
@@ -457,9 +459,8 @@ Optional tools that enhance the experience:
 - **awk** (usually pre-installed)
 - **realpath** (for path resolution)
 - **gh** (GitHub CLI) - enables pr-closed detection for github.com remotes
-- **timeout** / **gtimeout** (GNU coreutils) - bounds fetches, and required
-  for `git wclean --check` to fetch at all (without one, `--check` skips the
-  fetch)
+- **ps** (procps / base system) - lets a timed-out fetch's whole process tree
+  be killed; without it the fetch itself is still killed via its recorded pid
 
 ## Best Practices
 
