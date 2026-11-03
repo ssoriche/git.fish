@@ -193,12 +193,14 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   `timeout git fetch`, where Ctrl-C kills the whole foreground group. All
   cleanup goes through one shared `_git_fetch_progress_abort`, which reads
   the in-flight job from the global `_git_fetch_progress_job`
-  (`<status-file> <wrapper-pid>`, set immediately after the wrapper is
-  spawned and erased on every return path), erases it, sets the global
-  flag `_git_fetch_progress_interrupted`, runs
+  (`<status-file> <wrapper-pid> <drew-indicator>`, set immediately after
+  the wrapper is spawned and erased on every return path;
+  `<drew-indicator>` is 1 only for a job drawing the TTY spinner), erases
+  it, sets the global flag `_git_fetch_progress_interrupted`, runs
   `_git_fetch_progress_kill_tree` with the wrapper pid and the pid-file
-  contents, reaps the wrapper as the timeout path does, clears
-  the spinner line when stderr is a TTY, and removes both scratch files.
+  contents, reaps the wrapper as the timeout path does, clears the spinner
+  line only when the job drew one and stderr is a TTY (a `--quiet` job
+  never touches the terminal), and removes both scratch files.
   When the job global is unset the abort is a no-op, so every hook below is
   inert outside a fetch. The abort is reached two ways, because fish
   behaves differently depending on who receives the signal (verified on
