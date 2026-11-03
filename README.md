@@ -377,9 +377,10 @@ end
 
 `--check` prints at most one line, only when something is reapable, never runs
 `gh`, never sources repo-local config, and always fetches with the configured
-timeout. It exits 0 in every runtime condition except one: a timed-out fetch
-that could not be confirmed stopped exits 2 (still silently), so a stale ref
-set is never counted.
+timeout. It exits 2 silently when a timed-out fetch cannot be confirmed
+stopped, and 130 silently when interrupted. Otherwise it exits 0 and counts
+local refs as they are, including after a fetch failure or a confirmed
+timeout; the nudge is never computed from refs still in flux.
 
 ## Common Workflows
 
