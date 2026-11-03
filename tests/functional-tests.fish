@@ -2711,12 +2711,15 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
     set -l st $status
     set -lx PATH $orig_path
     rm -rf "$shim_dir"
+    set -l pre_cleared yes
+    test -d "$wts_dir/chk-gone"; and set pre_cleared no
     if test $st -eq 0
+        and test $pre_cleared = yes
         and test (count $out) -eq 1
         and string match -q "*1 gone*" -- $out
         echo "✅ fetch ran and pruned without a timeout utility (one-line nudge, exit 0)"
     else
-        echo "❌ status=$st output='$out'"
+        echo "❌ status=$st pre_cleared=$pre_cleared output='$out'"
         set failed_tests (math $failed_tests + 1)
     end
 
@@ -2890,11 +2893,15 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     _git_fetch_progress_kill_tree $kt_wrapper ''
     set -l st $status
     sleep 0.3
+    # The recorded child pid is the precise check; pgrep -f also matches the
+    # wrapper's own argv, which contains the sleep command text.
+    set -l child_alive 0
+    kill -0 (string trim <$kt_pidfile) 2>/dev/null; and set child_alive 1
     set -l survivors (pgrep -f 'sleep 6049')
-    if test $st -eq 0; and test -z "$survivors"
+    if test $st -eq 0; and test $child_alive -eq 0; and test -z "$survivors"
         echo "✅ ps walk found and killed the wrapper's child"
     else
-        echo "❌ status=$st survivors='$survivors'"
+        echo "❌ status=$st child_alive=$child_alive survivors='$survivors'"
         set failed_tests (math $failed_tests + 1)
         pkill -f 'sleep 6049' 2>/dev/null
     end
@@ -2915,11 +2922,13 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     set -l st $status
     set -lx PATH $orig_path
     sleep 0.3
+    set -l child_alive 0
+    kill -0 $kt_gitpid 2>/dev/null; and set child_alive 1
     set -l survivors (pgrep -f 'sleep 6049')
-    if test $st -eq 0; and test -z "$survivors"
+    if test $st -eq 0; and test $child_alive -eq 0; and test -z "$survivors"
         echo "✅ pid-file source killed git without ps"
     else
-        echo "❌ status=$st survivors='$survivors'"
+        echo "❌ status=$st child_alive=$child_alive survivors='$survivors'"
         set failed_tests (math $failed_tests + 1)
         pkill -f 'sleep 6049' 2>/dev/null
     end
@@ -2934,11 +2943,12 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     _git_fetch_progress_kill_tree $kt_wrapper ''
     set -l st $status
     set -lx PATH $orig_path
-    set -l survivors (pgrep -f 'sleep 6049')
-    if test $st -eq 1; and test -n "$survivors"
+    set -l child_alive 0
+    kill -0 (string trim <$kt_pidfile) 2>/dev/null; and set child_alive 1
+    if test $st -eq 1; and test $child_alive -eq 1
         echo "✅ no ps and empty pid -> 1, child left running (this is the 125 case)"
     else
-        echo "❌ status=$st survivors='$survivors'"
+        echo "❌ status=$st child_alive=$child_alive"
         set failed_tests (math $failed_tests + 1)
     end
     # The test owns this orphan: kill it and the wrapper now.
