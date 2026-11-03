@@ -16,6 +16,10 @@ function _git_wclean_config --description "Load git-wclean config: defaults, the
     #   explicit, interactive `git wclean` run may opt in. Hook-driven callers
     #   (git wclean --check) and read-only callers (git-wlist) must not pass it.
     #
+    #   After loading, a _wclean_config_fetch_timeout that is not a whole
+    #   number of seconds >= 1 is replaced by 30, with a warning on stderr
+    #   (unless --quiet).
+    #
     # OPTIONS
     #   --allow-local   Include ./.git-wclean-config as the last-resort fallback
     #   --quiet         Suppress the "Loading configuration from" stderr message
@@ -59,6 +63,17 @@ function _git_wclean_config --description "Load git-wclean config: defaults, the
             source "$config_file"
             break
         end
+    end
+
+    # _git_fetch_progress only takes whole seconds >= 1; anything else would
+    # make every fetch fail with a misleading "Failed to fetch".
+    if not string match -qr '^[1-9][0-9]*$' -- "$_wclean_config_fetch_timeout"
+        if not set -q _flag_quiet
+            printf "warning: _wclean_config_fetch_timeout '%s' is not a whole number" \
+                "$_wclean_config_fetch_timeout" >&2
+            printf " of seconds >= 1; using 30\n" >&2
+        end
+        set -g _wclean_config_fetch_timeout 30
     end
     return 0
 end
