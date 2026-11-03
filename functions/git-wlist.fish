@@ -22,8 +22,8 @@ function git-wlist --description "List git worktrees with lifecycle state"
     #
     #   Rows are sorted in that state order, oldest first within each state.
     #   Git's own locked/prunable annotations are appended to the NAME column.
-    #   Runs one 'git fetch --prune origin' up front (bounded by the
-    #   _wclean_config_fetch_timeout setting when a timeout utility exists).
+    #   Runs one 'git fetch --prune origin' up front, bounded by the
+    #   _wclean_config_fetch_timeout setting (no timeout utility needed).
     #
     #   Reads the same config as git-wclean (~/.config/git-wclean/config or
     #   ~/.git-wclean-config) but never the repo-local ./.git-wclean-config.
@@ -84,18 +84,19 @@ function git-wlist --description "List git worktrees with lifecycle state"
         set stale_days $_flag_stale_days
     end
 
-    # One fetch --prune, timeout-guarded (mirrors _wclean_fetch_remotes; kept
-    # inline because wclean's helper prints progress and sets wclean globals)
+    # One fetch --prune through the shared helper (native timeout, spinner on
+    # a TTY, label line otherwise - all on stderr so piped stdout stays a
+    # clean table). wlist is read-only, so even an unconfirmed timeout (125)
+    # only costs freshness: warn and carry on.
     if contains origin (git remote 2>/dev/null)
-        set -l timeout_cmd
-        command -q timeout; and set timeout_cmd timeout
-        test -z "$timeout_cmd"; and command -q gtimeout; and set timeout_cmd gtimeout
-        if test -n "$timeout_cmd"
-            $timeout_cmd $_wclean_config_fetch_timeout git fetch --prune origin >/dev/null 2>&1
-            or printf "warning: fetch failed; results may be stale\n" >&2
-        else
-            git fetch --prune origin >/dev/null 2>&1
-            or printf "warning: fetch failed; results may be stale\n" >&2
+        _git_fetch_progress --label "Fetching from origin" \
+            --timeout $_wclean_config_fetch_timeout -- --prune origin
+        switch $status
+            case 0
+            case 124 125
+                printf "warning: fetch timed out; results may be stale\n" >&2
+            case '*'
+                printf "warning: fetch failed; results may be stale\n" >&2
         end
     end
 
