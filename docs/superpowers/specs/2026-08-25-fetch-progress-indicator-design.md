@@ -60,8 +60,12 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
       $status_file $fetch_args 2>/dev/null &
   ```
 
-  The scratch status file (from `mktemp`) carries the fetch's exit status,
-  since fish's `wait` does not propagate job status. It is passed as the
+  The scratch status file carries the fetch's exit status. It is created
+  by `mktemp` with an explicit `git-fish-fetch.XXXXXX` template under
+  `$TMPDIR` (BSD `mktemp` ignores `$TMPDIR` without one), falling back to
+  `/tmp` when `$TMPDIR` is empty (e.g. `/` trimmed) or unusable (missing,
+  unwritable); the helper returns 2 only if both attempts fail. The file is
+  needed since fish's `wait` does not propagate job status. It is passed as the
   sh script's `$0` positional — fish locals are not exported, so referencing
   a `$STATUS_FILE` variable inside the single-quoted script would silently
   expand to empty and lose the status. The wrapper also records the `git
@@ -104,7 +108,10 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   interactive shell. Before removing the scratch files, the timeout path
   briefly waits for the wrapper to exit (bounded — it dies as soon as git
   does); deleting the files first would let the wrapper's trailing `echo`
-  recreate the status file and leak it in `$TMPDIR`.
+  recreate the status file and leak it in `$TMPDIR`. Because the wrapper
+  exits only once git has, a wrapper still alive after that bounded wait
+  means git is not confirmed dead: the helper then returns **125** instead
+  of 124, so 124 is reported only once the wrapper is seen gone.
   - *`_git_fetch_progress_kill_tree <wrapper-pid> [<git-pid>]`* is a private
     function in the same file so the test suite can drive its fallbacks
     directly. It builds a kill set from two independent sources and SIGTERMs
@@ -124,7 +131,9 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     only output is ever the in-progress indicator, so `--quiet` is silent on
     every path including 125. That double failure requires both a broken
     `$TMPDIR` mid-run and a system without `ps`; it is surfaced to the
-    caller rather than designed around.
+    caller rather than designed around. 125 is also returned when the kill
+    was sent but the wrapper is still alive after the bounded wait (see
+    above).
   - *Why git itself must die:* killing only `$last_pid` would orphan the
     still-running `git fetch` — unacceptable for `git-wclean`, which goes on
     to delete branches while that fetch mutates refs. Both sources above
@@ -146,9 +155,11 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     (tests, CI, scripts) they share the caller's pgroup and a group kill
     would take out the harness.
 - Return codes: **0** fetch succeeded, **1** invalid arguments, **2** fetch
-  failed (or `mktemp` failure, or empty/missing status file), **124** timed
-  out and the fetch tree was killed, **125** timed out but the fetch could
-  not be confirmed stopped (the double-failure path above). Callers keep ownership of
+  failed (or `mktemp` failure under both `$TMPDIR` and `/tmp`, or
+  empty/missing status file), **124** timed out, the fetch tree was killed,
+  and the wrapper was seen gone, **125** timed out but the fetch could not
+  be confirmed stopped (the double-failure path above, or the wrapper still
+  alive after the bounded wait following the kill). Callers keep ownership of
   user-facing success/warning lines — the helper draws only the in-progress
   indicator.
 - **Interruption (Ctrl-C / SIGTERM):** the background job has its own
@@ -247,8 +258,10 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   run, after its normal cleanup, and `--check`, silently), `git-wlist` (no
   table), and `git-wrm` (which pops its `pushd` first; no message, since
   the user pressed Ctrl-C).
-- If `mktemp` fails the helper returns 2 immediately (treated as fetch
-  failure by callers).
+- The status file is created with an explicit template under `$TMPDIR`,
+  falling back to `/tmp` when `$TMPDIR` is empty or unusable; only if both
+  `mktemp` attempts fail does the helper return 2 immediately (treated as
+  fetch failure by callers).
 
 ## Testing
 
