@@ -3366,6 +3366,35 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     set -l stray $tmp_dir/*
     test (count $stray) -gt 0; and rm -f $stray
 
+    echo "Test 16: the abort ignores a pid file planted as a symlink..."
+    set total_tests (math $total_tests + 1)
+    # A planted "$0.pid" makes the wrapper's noclobber write fail, so the
+    # path stays attacker-controlled: a symlink to a file naming a victim pid
+    # must not be read and signalled. The fake wrapper is a childless sleep,
+    # so the ps walk finds no targets either.
+    sleep 6042 &
+    set -l pl_victim $last_pid
+    sleep 6041 &
+    set -l pl_wrapper $last_pid
+    printf '%s\n' $pl_victim >$cap_dir/planted
+    ln -s $cap_dir/planted $cap_dir/planted-status.pid
+    touch $cap_dir/planted-status
+    set -g _git_fetch_progress_job $cap_dir/planted-status $pl_wrapper 0
+    _git_fetch_progress_abort
+    set -e _git_fetch_progress_interrupted
+    sleep 0.3
+    set -l victim_alive 0
+    kill -0 $pl_victim 2>/dev/null; and set victim_alive 1
+    if test $victim_alive -eq 1; and not set -q _git_fetch_progress_job
+        echo "✅ symlinked pid file was not trusted; the victim survived"
+    else
+        echo "❌ victim_alive=$victim_alive job="(set -q _git_fetch_progress_job; and echo set; or echo unset)
+        set failed_tests (math $failed_tests + 1)
+    end
+    kill -TERM $pl_victim $pl_wrapper 2>/dev/null
+    set -e _git_fetch_progress_job
+    rm -f $cap_dir/planted $cap_dir/planted-status $cap_dir/planted-status.pid
+
     # Cleanup
     set -e TMPDIR
     cd "$orig_dir"

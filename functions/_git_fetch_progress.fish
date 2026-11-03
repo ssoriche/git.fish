@@ -153,8 +153,10 @@ function _git_fetch_progress --description "Run git fetch in the background with
         # avoids fish's "Job terminated" notice. 125 = both kill sources were
         # unavailable; the helper prints nothing either way (callers own the
         # warning, and --quiet must stay literal).
+        # A planted path (the noclobber write failed) is not ours: trust
+        # only a regular file we own, never a symlink.
         set -l git_pid ''
-        if test -r $pid_file
+        if not test -L $pid_file; and test -O $pid_file; and test -r $pid_file
             read git_pid <$pid_file
         end
         if _git_fetch_progress_kill_tree $wrapper_pid $git_pid
@@ -318,9 +320,11 @@ function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an 
     # fish does not cancel the function) to return 130 instead of resuming.
     set -g _git_fetch_progress_interrupted 1
 
+    # Same trust check as the timeout branch: never a symlink, only ours.
+    set -l pid_file "$status_file.pid"
     set -l git_pid ''
-    if test -r "$status_file.pid"
-        read git_pid <"$status_file.pid"
+    if not test -L $pid_file; and test -O $pid_file; and test -r $pid_file
+        read git_pid <$pid_file
     end
     _git_fetch_progress_kill_tree $wrapper_pid $git_pid
     or kill -TERM $wrapper_pid 2>/dev/null
@@ -331,7 +335,7 @@ function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an 
     end
     # Files stay only when the wrapper survived SIGKILL (it would recreate them).
     test $reaped -ne 2
-    and rm -f $status_file "$status_file.pid"
+    and rm -f $status_file $pid_file
 end
 
 # fish accepts one signal per handler, so two thin handlers share the abort
