@@ -2,6 +2,11 @@
 
 # Signal handling for clean shutdown - shared cleanup logic
 function _wclean_cleanup_handler
+    # Read before the flag cleanup below erases it: under --check (a prompt
+    # hook) the interrupt must stay silent.
+    set -l was_check 0
+    set -q _wclean_flag_check; and set was_check 1
+
     # Stop an in-flight fetch before we exit; the helper's own INT/TERM
     # handlers may not run because this one ends in exit 130.
     functions -q _git_fetch_progress_abort; and _git_fetch_progress_abort
@@ -41,7 +46,9 @@ function _wclean_cleanup_handler
     set -e _wclean_config_fetch_timeout
     set -e _wclean_config_stale_days
 
-    printf "\n\n🚫 Operation interrupted by user. Cleanup completed.\n" >&2
+    if test $was_check -eq 0
+        printf "\n\n🚫 Operation interrupted by user. Cleanup completed.\n" >&2
+    end
     exit 130 # Standard exit code for Ctrl+C
 end
 
