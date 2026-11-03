@@ -3212,17 +3212,24 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     # Shadow the wait with a stub that runs the real abort (as the signal
     # handler would) while the helper sits in the wait; the abort owns the
     # file removal, the helper only reports 130.
+    # One-shot: the first wait runs the abort; every later wait (including
+    # the abort's own reap) delegates to the real function.
+    functions -c _git_fetch_progress_wait_gone _real_wait_gone
     function _git_fetch_progress_wait_gone
-        functions -e _git_fetch_progress_wait_gone
-        _git_fetch_progress_abort
-        return 0
+        if not set -q _t11_fired
+            set -g _t11_fired 1
+            _git_fetch_progress_abort
+            return 0
+        end
+        _real_wait_gone $argv
     end
     set -lx GIT_SSH_COMMAND 'sh -c "sleep 6047"'
     _git_fetch_progress --label "Fetching from fp6047" --timeout 1 -- fp6047 \
         >$cap_dir/out11 2>$cap_dir/err11
     set -l st $status
     set -e GIT_SSH_COMMAND
-    functions -e _git_fetch_progress_wait_gone
+    functions -e _git_fetch_progress_wait_gone _real_wait_gone
+    set -e _t11_fired
     source $test_functions_dir/_git_fetch_progress.fish
     set -l leftovers $tmp_dir/*
     sleep 1
@@ -3230,6 +3237,7 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     if test $st -eq 130; and test (count $leftovers) -eq 0; and test (count $late) -eq 0
         and not set -q _git_fetch_progress_interrupted
         and not set -q _git_fetch_progress_job
+        and not string match -q '*Unknown command*' -- (string collect <$cap_dir/err11)
         echo "✅ interrupt during the timeout wait returns 130 and cleans up"
     else
         echo "❌ status=$st (expected 130) leftovers=$leftovers late=$late"
