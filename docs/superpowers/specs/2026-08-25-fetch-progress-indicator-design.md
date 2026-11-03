@@ -83,9 +83,10 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   but `$0.pid` is a predictable name, so that one write runs under
   noclobber (`set -C`, scoped to a subshell): a path planted there by
   another user of a shared `TMPDIR` (file or symlink, dangling or not) is
-  refused rather than followed, and the pid file is simply absent; the
-  kill never relies on the pid file alone. The outer `2>/dev/null`
-  matters too: it silences the wrapper's own job notice
+  refused rather than followed, and the pid file is simply absent. With
+  `ps` on `PATH`, the descendant walk still targets git. Without `ps`, the
+  pid file is the only target source. The outer `2>/dev/null` matters too:
+  it silences the wrapper's own job notice
   (`Terminated: 15  git fetch …`) that `sh` otherwise prints to the
   inherited stderr when its child is killed on the timeout path.
   `$last_pid` is the `sh` wrapper's pid; the `git fetch` process is its
