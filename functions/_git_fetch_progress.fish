@@ -45,7 +45,9 @@ function _git_fetch_progress --description "Run git fetch in the background with
     #     * Interactive Ctrl-C goes to the foreground external command (the
     #       spinner's sleep), not to fish, so the INT handler never runs and
     #       fish abandons this function. The fish_postexec hook at the bottom
-    #       of this file runs the abort after that cancelled command line.
+    #       of this file runs the abort after that cancelled command line
+    #       (the fish_prompt hook does it after a cancelled greeting/prompt
+    #       hook, which has no command line).
     #     * When fish itself receives SIGINT/SIGTERM (scripts, CI, kill), the
     #       signal handlers run the abort, but fish does not cancel the
     #       function: the loop sees _git_fetch_progress_interrupted, and the
@@ -270,7 +272,7 @@ function _git_fetch_progress_wait_gone --description "Wait up to ~2s for a pid t
     return 1
 end
 
-function _git_fetch_progress_reap --description "Wait for the wrapper; end it if it outlives the wait"
+function _git_fetch_progress_reap --description "Wait for the wrapper, then TERM it"
     # Called after the kill, before the scratch files are removed. A wrapper
     # still alive after ~2s would later run its trailing 'echo $? >"$0"' and
     # recreate the status file, so SIGTERM it (it is a shell blocked in
@@ -329,6 +331,18 @@ end
 # abort is a no-op unless a job is still registered. No helper loop is left
 # to consume the interrupted flag here, so clear it too.
 function _git_fetch_progress_on_postexec --on-event fish_postexec
+    _git_fetch_progress_abort_orphan
+end
+
+# Ctrl-C during a fish_greeting or prompt-hook fetch (git wclean --check) is
+# not followed by fish_postexec, as there was no command line; the next
+# prompt does the same cleanup. Handlers run one after another, so a fetch
+# started by another fish_prompt handler is never in flight here.
+function _git_fetch_progress_on_prompt --on-event fish_prompt
+    _git_fetch_progress_abort_orphan
+end
+
+function _git_fetch_progress_abort_orphan --description "Abort an abandoned fetch job"
     _git_fetch_progress_abort
     set -e _git_fetch_progress_interrupted
 end

@@ -3114,6 +3114,36 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     end
     kill -TERM $pe_wrapper 2>/dev/null
 
+    echo "Test 9b: fish_prompt aborts a fetch left registered by a cancelled prompt hook..."
+    set total_tests (math $total_tests + 1)
+    # Ctrl-C during a fish_greeting or prompt-hook `git wclean --check` is
+    # not followed by fish_postexec (there was no command line), so the
+    # next fish_prompt must do the same cleanup.
+    set -l pr_status $cap_dir/pr-status
+    touch $pr_status "$pr_status.pid"
+    sleep 6045 &
+    set -l pr_wrapper $last_pid
+    set -l pr_out (fish -c "set -p fish_function_path $test_functions_dir
+        source $test_functions_dir/_git_fetch_progress.fish
+        set -g _git_fetch_progress_job $pr_status $pr_wrapper
+        emit fish_prompt
+        set -q _git_fetch_progress_job; and printf 'job-still-set\n'
+        set -q _git_fetch_progress_interrupted; and printf 'flag-still-set\n'
+        printf 'prompt-done\n'" 2>/dev/null)
+    # Match loosely: the child loads the user's config, whose own fish_prompt
+    # handlers may print (e.g. OSC 7 cwd escapes).
+    if string match -q '*prompt-done*' -- "$pr_out"
+        and not string match -q '*still-set*' -- "$pr_out"
+        and test ! -e $pr_status
+        and test ! -e "$pr_status.pid"
+        echo "✅ fish_prompt hook removed the scratch files and cleared the globals"
+    else
+        echo "❌ child said '$pr_out' status-file-exists="(test -e $pr_status; and echo yes; or echo no)
+        set failed_tests (math $failed_tests + 1)
+    end
+    kill -TERM $pr_wrapper 2>/dev/null
+    rm -f $pr_status "$pr_status.pid"
+
     echo "Test 10: timeout whose wrapper never confirms gone -> 125, not 124..."
     set total_tests (math $total_tests + 1)
     # A wrapper still alive ~2s after the kill means git may still be running.
