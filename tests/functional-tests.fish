@@ -3144,11 +3144,13 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     kill -TERM $pr_wrapper 2>/dev/null
     rm -f $pr_status "$pr_status.pid"
 
-    echo "Test 10: timeout whose wrapper never confirms gone -> 125, not 124..."
+    echo "Test 10: timeout whose wrapper stays alive after SIGKILL -> 125, files left..."
     set total_tests (math $total_tests + 1)
-    # A wrapper still alive ~2s after the kill means git may still be running.
-    # Hard to stage for real (git dies on SIGTERM), so shadow the wait with a
-    # stub that always reports "still alive" and drive the real timeout path.
+    # A wrapper still alive after the TERM, the KILL and every wait means git
+    # may still be running and the wrapper could recreate the status file, so
+    # the helper must return 125 and leave the scratch files in place. Hard to
+    # stage for real, so shadow the wait with a stub that always reports
+    # "still alive" and drive the real timeout path.
     function _git_fetch_progress_wait_gone
         return 1
     end
@@ -3159,16 +3161,15 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     set -e GIT_SSH_COMMAND
     functions -e _git_fetch_progress_wait_gone
     source $test_functions_dir/_git_fetch_progress.fish
-    # The wrapper outlived the (stubbed) wait, so the helper must have ended
-    # it before removing the files: its trailing echo must not recreate the
-    # status file later.
-    set -l leftovers $tmp_dir/*
-    sleep 1
-    set -l late $tmp_dir/*
-    if test $st -eq 125; and test (count $leftovers) -eq 0; and test (count $late) -eq 0
-        echo "✅ unconfirmed wrapper exit downgrades the timeout to 125, no file reappears"
+    # The real wrapper is dead (the shadow lied), so these are the files the
+    # helper chose to leave; clean them up here.
+    set -l kept_status $tmp_dir/git-fish-fetch.*
+    set -l kept_pid (string match -r '.*\.pid$' -- $kept_status)
+    set -l kept_main (string match -rv '.*\.pid$' -- $kept_status)
+    if test $st -eq 125; and test (count $kept_main) -eq 1; and test (count $kept_pid) -le 1
+        echo "✅ unconfirmed wrapper exit gives 125 and the scratch files are left in place"
     else
-        echo "❌ status=$st (expected 125) leftovers=$leftovers late=$late"
+        echo "❌ status=$st (expected 125) kept=$kept_status"
         set failed_tests (math $failed_tests + 1)
     end
     sleep 0.3
@@ -3179,13 +3180,10 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
 
     echo "Test 10b: a wrapper that outlives the wait is ended before the files go..."
     set total_tests (math $total_tests + 1)
-    # Deterministic form of Test 10's leak check: kill-tree is stubbed too,
-    # so git (and therefore its wrapper) is still alive when the helper
-    # returns. Killing git afterwards would let a surviving wrapper run its
-    # trailing echo and recreate the status file in TMPDIR.
-    function _git_fetch_progress_wait_gone
-        return 1
-    end
+    # Real waits, kill-tree stubbed: git (and therefore its wrapper) is still
+    # alive when the wait runs out, so the reap must signal the wrapper and
+    # confirm it gone before the files are removed. Killing git afterwards
+    # would otherwise let a surviving wrapper recreate the status file.
     function _git_fetch_progress_kill_tree
         return 0
     end
@@ -3193,7 +3191,7 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     _git_fetch_progress --quiet --label x --timeout 1 -- fp6047 >/dev/null 2>&1
     set -l st $status
     set -e GIT_SSH_COMMAND
-    functions -e _git_fetch_progress_wait_gone _git_fetch_progress_kill_tree
+    functions -e _git_fetch_progress_kill_tree
     source $test_functions_dir/_git_fetch_progress.fish
     pkill -f 'git fetch fp6047' 2>/dev/null
     sleep 1
@@ -3211,10 +3209,12 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
 
     echo "Test 11: a signal during the timeout wait window returns 130, not 124/125..."
     set total_tests (math $total_tests + 1)
-    # Shadow the wait with a stub that simulates the abort handler setting the
-    # flag while the helper sits in the wait.
+    # Shadow the wait with a stub that runs the real abort (as the signal
+    # handler would) while the helper sits in the wait; the abort owns the
+    # file removal, the helper only reports 130.
     function _git_fetch_progress_wait_gone
-        set -g _git_fetch_progress_interrupted 1
+        functions -e _git_fetch_progress_wait_gone
+        _git_fetch_progress_abort
         return 0
     end
     set -lx GIT_SSH_COMMAND 'sh -c "sleep 6047"'

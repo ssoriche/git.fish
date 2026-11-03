@@ -30,7 +30,7 @@ function _git_fetch_progress --description "Run git fetch in the background with
     #   124  Timed out; the fetch process tree was killed and the wrapper
     #        (which exits only once git has) was seen gone
     #   125  Timed out; the fetch could not be confirmed stopped (no ps AND no
-    #        pid file, or the wrapper still alive ~2s after the kill).
+    #        pid file, or the wrapper did not exit on its own within ~2s).
     #        Callers that go on to delete things must abort.
     #   130  Interrupted (SIGINT/SIGTERM reached fish); the fetch was killed
     #
@@ -41,7 +41,9 @@ function _git_fetch_progress --description "Run git fetch in the background with
     #     skips askpass when GIT_ASKPASS is set but empty, which also overrides
     #     core.askPass). Such a fetch fails instead of hanging or popping up.
     #   - Interruption. _git_fetch_progress_abort kills the fetch tree and
-    #     removes both scratch files; it is reached two ways:
+    #     removes both scratch files (left in place only when the wrapper
+    #     cannot be confirmed gone even after SIGKILL, because deleting them
+    #     then would just let it recreate the status file); it is reached two ways:
     #     * Interactive Ctrl-C goes to the foreground external command (the
     #       spinner's sleep), not to fish, so the INT handler never runs and
     #       fish abandons this function. The fish_postexec hook at the bottom
@@ -136,12 +138,15 @@ function _git_fetch_progress --description "Run git fetch in the background with
     end
     if set -q _git_fetch_progress_interrupted
         set -e _git_fetch_progress_interrupted
-        rm -f $status_file $pid_file
+        # The abort has already reaped the wrapper and owns the file removal.
         set -e _git_fetch_progress_job
         return 130
     end
 
     set -l rc 2
+    # 0 = wrapper exited on its own, 1 = it had to be signalled (now gone),
+    # 2 = still alive after SIGKILL. Only 2 keeps the scratch files.
+    set -l reaped 0
     if test $timed_out -eq 1
         # Kill git (and its transport) rather than the wrapper: the wrapper
         # then exits on its own after writing git's signal status, which
@@ -160,10 +165,12 @@ function _git_fetch_progress --description "Run git fetch in the background with
         end
         # Let the wrapper finish its trailing 'echo $? >"$0"' before the
         # scratch files go, or it would recreate the status file afterwards.
-        # The wrapper only exits once git does, so one still alive after
-        # ~2s means the fetch is not confirmed stopped: report 125 (the reap
-        # then ends the wrapper itself so it cannot write after the rm).
-        if not _git_fetch_progress_reap $wrapper_pid
+        # The wrapper only exits once git does, so one that did not exit on
+        # its own means the fetch is not confirmed stopped: report 125 (the
+        # reap then TERMs/KILLs the wrapper so it cannot write after the rm).
+        _git_fetch_progress_reap $wrapper_pid
+        set reaped $status
+        if test $reaped -ne 0
             set rc 125
         else
             # git may have exited 0 on its own just before the deadline; a
@@ -195,7 +202,10 @@ function _git_fetch_progress --description "Run git fetch in the background with
         set -e _git_fetch_progress_interrupted
         set rc 130
     end
-    rm -f $status_file $pid_file
+    # A wrapper that survived even SIGKILL would recreate the status file
+    # after the rm, so the files stay and the 125 stands.
+    test $reaped -ne 2
+    and rm -f $status_file $pid_file
     set -e _git_fetch_progress_job
     return $rc
 end
@@ -272,18 +282,24 @@ function _git_fetch_progress_wait_gone --description "Wait up to ~2s for a pid t
     return 1
 end
 
-function _git_fetch_progress_reap --description "Wait for the wrapper, then TERM it"
+function _git_fetch_progress_reap --description "Wait for the wrapper, then TERM and KILL it"
     # Called after the kill, before the scratch files are removed. A wrapper
-    # still alive after ~2s would later run its trailing 'echo $? >"$0"' and
-    # recreate the status file, so SIGTERM it (it is a shell blocked in
-    # 'wait'; TERM ends it before the echo) and wait once more. Returns 0
-    # when the wrapper went away on its own, 1 when it outlived the first
-    # wait (git is then not confirmed stopped, even if the TERM worked).
+    # still alive would later run its trailing 'echo $? >"$0"' and recreate
+    # the status file, so wait ~2s, then SIGTERM it (a shell blocked in
+    # 'wait'; TERM ends it before the echo), wait again, then SIGKILL and
+    # wait a last time. Returns 0 when the wrapper went away on its own, 1
+    # when it had to be signalled but is now gone (git is then not confirmed
+    # stopped), 2 when it is still alive after SIGKILL (callers must leave
+    # the scratch files in place).
     _git_fetch_progress_wait_gone $argv[1]
     and return 0
     kill -TERM $argv[1] 2>/dev/null
     _git_fetch_progress_wait_gone $argv[1]
-    return 1
+    and return 1
+    kill -KILL $argv[1] 2>/dev/null
+    _git_fetch_progress_wait_gone $argv[1]
+    and return 1
+    return 2
 end
 
 function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an in-flight _git_fetch_progress job"
@@ -309,10 +325,13 @@ function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an 
     _git_fetch_progress_kill_tree $wrapper_pid $git_pid
     or kill -TERM $wrapper_pid 2>/dev/null
     _git_fetch_progress_reap $wrapper_pid
+    set -l reaped $status
     if test "$drew_indicator" = 1; and isatty stderr
         printf '\r\033[K' >&2
     end
-    rm -f $status_file "$status_file.pid"
+    # Files stay only when the wrapper survived SIGKILL (it would recreate them).
+    test $reaped -ne 2
+    and rm -f $status_file "$status_file.pid"
 end
 
 # fish accepts one signal per handler, so two thin handlers share the abort
