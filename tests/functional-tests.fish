@@ -2911,7 +2911,78 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     kill -TERM (string trim <$kt_pidfile) 2>/dev/null
     kill -TERM $kt_wrapper 2>/dev/null
     pkill -f 'sleep 6049' 2>/dev/null
-    # TASK 3 TESTS GO HERE
+    echo "Test 5: timeout -> 124 promptly, git and its transport gone, no scratch files..."
+    set total_tests (math $total_tests + 1)
+    set -l t0 (date +%s)
+    set -lx GIT_SSH_COMMAND 'sh -c "sleep 6047"'
+    _git_fetch_progress --label "Fetching from fp6047" --timeout 1 -- fp6047 \
+        >$cap_dir/out5 2>$cap_dir/err5
+    set -l st $status
+    set -e GIT_SSH_COMMAND
+    set -l took (math (date +%s) - $t0)
+    sleep 0.3
+    set -l transport (pgrep -f 'sleep 6047')
+    set -l gitproc (pgrep -f 'git fetch fp6047')
+    set -l leftovers $tmp_dir/*
+    if test $st -eq 124
+        and test $took -le 6
+        and test -z "$transport"
+        and test -z "$gitproc"
+        and test (count $leftovers) -eq 0
+        and not set -q _git_fetch_progress_job
+        echo "✅ timed out in "$took"s with git and transport dead, TMPDIR clean"
+    else
+        echo "❌ status=$st took=$took transport='$transport' git='$gitproc' leftovers=$leftovers"
+        set failed_tests (math $failed_tests + 1)
+    end
+    pkill -f 'sleep 6047' 2>/dev/null
+    pkill -f 'git fetch fp6047' 2>/dev/null
+
+    echo "Test 6: --quiet on the success path prints nothing on either stream..."
+    set total_tests (math $total_tests + 1)
+    _git_fetch_progress --quiet --label "Fetching from origin" --timeout 10 -- --prune origin \
+        >$cap_dir/out6 2>$cap_dir/err6
+    set -l st $status
+    if test $st -eq 0; and test ! -s $cap_dir/out6; and test ! -s $cap_dir/err6
+        echo "✅ quiet success is silent"
+    else
+        echo "❌ status=$st stdout-size="(wc -c <$cap_dir/out6)" stderr-size="(wc -c <$cap_dir/err6)
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 7: --quiet on the 125 path (no ps, pid file emptied) is silent and returns 125..."
+    set total_tests (math $total_tests + 1)
+    # Shim PATH has everything the helper and git need EXCEPT ps. A second
+    # external process empties the pid file shortly after the wrapper writes
+    # it, so when the timeout fires both kill sources are gone -> 125.
+    set -l shim_dir $cap_dir/shim-125
+    mkdir -p $shim_dir
+    for tool in git sh mktemp sleep date rm kill basename dirname
+        ln -s (command -s $tool) $shim_dir/$tool
+    end
+    sh -c 'sleep 0.6; for f in "$0"/*.pid; do : >"$f"; done' $tmp_dir &
+    set -l orig_path $PATH
+    set -lx PATH $shim_dir
+    set -lx GIT_SSH_COMMAND 'sh -c "sleep 6047"'
+    _git_fetch_progress --quiet --label "Fetching from fp6047" --timeout 2 -- fp6047 \
+        >$cap_dir/out7 2>$cap_dir/err7
+    set -l st $status
+    set -e GIT_SSH_COMMAND
+    set -lx PATH $orig_path
+    set -l leftovers $tmp_dir/*
+    if test $st -eq 125
+        and test ! -s $cap_dir/out7
+        and test ! -s $cap_dir/err7
+        and test (count $leftovers) -eq 0
+        echo "✅ unconfirmed timeout returns 125 with no output and no scratch files"
+    else
+        echo "❌ status=$st stdout-size="(wc -c <$cap_dir/out7)" stderr-size="(wc -c <$cap_dir/err7)" leftovers=$leftovers"
+        set failed_tests (math $failed_tests + 1)
+    end
+    # 125 means the helper could not kill git: the test does it. Git first,
+    # because a live git respawns its transport when the old one dies.
+    pkill -f 'git fetch fp6047' 2>/dev/null
+    pkill -f 'sleep 6047' 2>/dev/null
     # TASK 4 TESTS GO HERE
 
     # Cleanup

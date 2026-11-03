@@ -62,7 +62,12 @@ function _git_fetch_progress --description "Run git fetch in the background with
     # Scratch files: the wrapper writes git's pid to "$0.pid" and git's exit
     # status to "$0". They are passed as the sh script's $0 because fish
     # locals are not exported and would expand to nothing inside the script.
-    set -l status_file (mktemp 2>/dev/null)
+    set -l tmp_base /tmp
+    # BSD mktemp ignores $TMPDIR without a template, so build the path here.
+    if test -n "$TMPDIR"
+        set tmp_base (string replace -r '/+$' '' -- $TMPDIR)
+    end
+    set -l status_file (mktemp $tmp_base/git-fish-fetch.XXXXXX 2>/dev/null)
     or return 2
     set -l pid_file "$status_file.pid"
 
@@ -100,8 +105,24 @@ function _git_fetch_progress --description "Run git fetch in the background with
 
     set -l rc 2
     if test $timed_out -eq 1
-        # Task 3 fills this branch in.
-        set rc 124
+        # Kill git (and its transport) rather than the wrapper: the wrapper
+        # then exits on its own after writing git's signal status, which
+        # avoids fish's "Job terminated" notice. 125 = both kill sources were
+        # unavailable; the helper prints nothing either way (callers own the
+        # warning, and --quiet must stay literal).
+        set -l git_pid ''
+        if test -r $pid_file
+            read git_pid <$pid_file
+        end
+        if _git_fetch_progress_kill_tree $wrapper_pid $git_pid
+            set rc 124
+        else
+            kill -TERM $wrapper_pid 2>/dev/null
+            set rc 125
+        end
+        # Let the wrapper finish its trailing 'echo $? >"$0"' before the
+        # scratch files go, or it would recreate the status file afterwards.
+        _git_fetch_progress_wait_gone $wrapper_pid
     else
         # Explicit reap on the normal path; the wrapper is already gone so
         # this returns at once, and fish's wait does not carry the status,
