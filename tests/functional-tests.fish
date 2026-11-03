@@ -3045,6 +3045,34 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     pkill -f 'sleep 6048' 2>/dev/null
     pkill -f 'git fetch fp6048' 2>/dev/null
 
+    echo "Test 9: fish_postexec aborts a fetch left registered by a cancelled command line..."
+    set total_tests (math $total_tests + 1)
+    # Interactively Ctrl-C reaches the foreground sleep, not fish, so the INT
+    # handler never runs and fish just abandons the helper. A fake in-flight
+    # job (real scratch files plus a harmless sleeping wrapper) stands in for
+    # that state; emitting fish_postexec must clean it up and leave neither
+    # the job global nor the interrupted flag behind.
+    set -l pe_status $cap_dir/pe-status
+    touch $pe_status "$pe_status.pid"
+    sleep 6045 &
+    set -l pe_wrapper $last_pid
+    set -l pe_out (fish -c "set -p fish_function_path $test_functions_dir
+        source $test_functions_dir/_git_fetch_progress.fish
+        set -g _git_fetch_progress_job $pe_status $pe_wrapper
+        emit fish_postexec
+        set -q _git_fetch_progress_job; and printf 'job-still-set\n'
+        set -q _git_fetch_progress_interrupted; and printf 'flag-still-set\n'
+        printf 'postexec-done\n'" 2>/dev/null)
+    if test "$pe_out" = postexec-done
+        and test ! -e $pe_status
+        and test ! -e "$pe_status.pid"
+        echo "✅ postexec hook removed the scratch files and cleared the globals"
+    else
+        echo "❌ child said '$pe_out' status-file-exists="(test -e $pe_status; and echo yes; or echo no)
+        set failed_tests (math $failed_tests + 1)
+    end
+    kill -TERM $pe_wrapper 2>/dev/null
+
     # Cleanup
     set -e TMPDIR
     cd "$orig_dir"
