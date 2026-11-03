@@ -102,7 +102,9 @@ function _git_fetch_progress --description "Run git fetch in the background with
     # "Terminated" job notice when git is killed on the timeout path.
     sh -c (_git_fetch_progress_wrapper_script | string collect) $status_file $argv 2>/dev/null &
     set -l wrapper_pid $last_pid
-    set -g _git_fetch_progress_job $status_file $wrapper_pid
+    # <status-file> <wrapper-pid> <drew-indicator>: the abort clears the
+    # spinner line only for a job that drew one (never under --quiet).
+    set -g _git_fetch_progress_job $status_file $wrapper_pid $tty
 
     if test $quiet -eq 0; and test $tty -eq 0
         printf '%s…\n' $_flag_label >&2
@@ -292,6 +294,7 @@ function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an 
     or return 0
     set -l status_file $_git_fetch_progress_job[1]
     set -l wrapper_pid $_git_fetch_progress_job[2]
+    set -l drew_indicator "$_git_fetch_progress_job[3]"
     set -e _git_fetch_progress_job
     # Tells a still-running helper loop (non-interactive SIGINT/SIGTERM:
     # fish does not cancel the function) to return 130 instead of resuming.
@@ -304,7 +307,7 @@ function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an 
     _git_fetch_progress_kill_tree $wrapper_pid $git_pid
     or kill -TERM $wrapper_pid 2>/dev/null
     _git_fetch_progress_reap $wrapper_pid
-    if isatty stderr
+    if test "$drew_indicator" = 1; and isatty stderr
         printf '\r\033[K' >&2
     end
     rm -f $status_file "$status_file.pid"
