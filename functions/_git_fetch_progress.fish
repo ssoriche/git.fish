@@ -165,7 +165,7 @@ function _git_fetch_progress --description "Run git fetch in the background with
             kill -TERM $wrapper_pid 2>/dev/null
             set rc 125
         end
-        # Let the wrapper finish its trailing 'echo $? >"$0"' before the
+        # Let the wrapper finish its trailing 'echo "$st" >"$0"' before the
         # scratch files go, or it would recreate the status file afterwards.
         # The wrapper only exits once git does, so one that did not exit on
         # its own means the fetch is not confirmed stopped: report 125 (the
@@ -219,10 +219,19 @@ function _git_fetch_progress_wrapper_script --description "Print the sh script t
     # "$0" comes from mktemp but "$0.pid" is predictable, so the pid write is
     # under noclobber (set -C, scoped to a subshell): a path planted there
     # (file or symlink, dangling or not) is refused and the pid file is just
-    # absent. The kill never relies on the pid file alone (the ps walk).
+    # absent; the helper also ignores a pid file that is a symlink or not
+    # ours. A TERM sent to the wrapper itself (the only kill left without ps
+    # and without a pid file) is forwarded to git, and the wrapper keeps
+    # waiting until git is really gone, so it always exits after git does.
+    # A trapped TERM interrupts the first wait (status > 128), hence the loop.
     printf '%s\n' \
         'GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git fetch "$@" >/dev/null 2>&1 &' \
-        '(set -C; echo $! >"$0.pid") 2>/dev/null; wait $!; echo $? >"$0"'
+        'pid=$!' \
+        'trap \'kill -TERM "$pid" 2>/dev/null\' TERM' \
+        '(set -C; echo "$pid" >"$0.pid") 2>/dev/null' \
+        'wait "$pid"; st=$?' \
+        'while kill -0 "$pid" 2>/dev/null; do wait "$pid"; st=$?; done' \
+        'echo "$st" >"$0"'
 end
 
 function _git_fetch_progress_kill_tree --description "SIGTERM wrapper descendants and/or git pid"
@@ -286,13 +295,13 @@ end
 
 function _git_fetch_progress_reap --description "Wait for the wrapper, then TERM and KILL it"
     # Called after the kill, before the scratch files are removed. A wrapper
-    # still alive would later run its trailing 'echo $? >"$0"' and recreate
-    # the status file, so wait ~2s, then SIGTERM it (a shell blocked in
-    # 'wait'; TERM ends it before the echo), wait again, then SIGKILL and
-    # wait a last time. Returns 0 when the wrapper went away on its own, 1
-    # when it had to be signalled but is now gone (git is then not confirmed
-    # stopped), 2 when it is still alive after SIGKILL (callers must leave
-    # the scratch files in place).
+    # still alive would later run its trailing 'echo "$st" >"$0"' and recreate
+    # the status file, so wait ~2s, then SIGTERM it (it forwards the TERM to
+    # git and exits once git has), wait again, then SIGKILL and wait a last
+    # time. Returns 0 when the wrapper went away on its own, 1 when it had
+    # to be signalled but is now gone (git is then not confirmed stopped), 2
+    # when it is still alive after SIGKILL (callers must leave the scratch
+    # files in place).
     _git_fetch_progress_wait_gone $argv[1]
     and return 0
     kill -TERM $argv[1] 2>/dev/null

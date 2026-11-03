@@ -64,7 +64,12 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
 
   ```sh
   GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git fetch "$@" >/dev/null 2>&1 &
-  (set -C; echo $! >"$0.pid") 2>/dev/null; wait $!; echo $? >"$0"
+  pid=$!
+  trap 'kill -TERM "$pid" 2>/dev/null' TERM
+  (set -C; echo "$pid" >"$0.pid") 2>/dev/null
+  wait "$pid"; st=$?
+  while kill -0 "$pid" 2>/dev/null; do wait "$pid"; st=$?; done
+  echo "$st" >"$0"
   ```
 
   The scratch status file carries the fetch's exit status. It is created
@@ -85,7 +90,14 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   another user of a shared `TMPDIR` (file or symlink, dangling or not) is
   refused rather than followed, and the pid file is simply absent. With
   `ps` on `PATH`, the descendant walk still targets git. Without `ps`, the
-  pid file is the only target source. The outer `2>/dev/null` matters too:
+  pid file is the only target source. The helper reads the pid file only
+  when it is not a symlink and is owned by the current user, so a planted
+  path is never read and signalled. The wrapper also forwards a
+  SIGTERM sent to itself to git and keeps `wait`ing until git is really
+  gone (a trapped TERM interrupts the first `wait` with a status above
+  128, hence the loop), so it exits only after git has, even when the
+  wrapper is the only process the helper could signal (no `ps`, no
+  trusted pid file). The outer `2>/dev/null` matters too:
   it silences the wrapper's own job notice
   (`Terminated: 15  git fetch …`) that `sh` otherwise prints to the
   inherited stderr when its child is killed on the timeout path.
@@ -132,10 +144,11 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   means git is not confirmed dead: the helper then returns **125** instead
   of 124, so 124 is reported only once the wrapper is seen gone. Both this
   wait and the abort's go through `_git_fetch_progress_reap <wrapper-pid>`:
-  when the wrapper outlives the ~2s wait it SIGTERMs the wrapper (a shell
-  blocked in `wait`, which TERM ends before its trailing `echo`) and waits
-  once more, so the files are never removed under a live wrapper that
-  would recreate the status file. It returns 1 whenever the first wait
+  when the wrapper outlives the ~2s wait it SIGTERMs the wrapper (which
+  forwards the TERM to git and exits once git has, after its trailing
+  `echo`) and waits once more, then SIGKILLs it and waits a last time, so
+  the files are never removed under a live wrapper that would recreate the
+  status file. It returns 1 whenever the first wait
   failed (the 125 signal), 0 when the wrapper went away on its own.
   - *`_git_fetch_progress_kill_tree <wrapper-pid> [<git-pid>]`* is a private
     function in the same file so the test suite can drive its fallbacks
@@ -159,9 +172,13 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     caller rather than designed around. 125 is also returned when the kill
     was sent but the wrapper is still alive after the bounded wait (see
     above).
-  - *Why git itself must die:* killing only `$last_pid` would orphan the
-    still-running `git fetch` — unacceptable for `git-wclean`, which goes on
-    to delete branches while that fetch mutates refs. Both sources above
+  - *Why git itself must die:* a plain `sh` killed by SIGTERM would orphan
+    the still-running `git fetch` — unacceptable for `git-wclean`, which
+    goes on to delete branches while that fetch mutates refs. The wrapper
+    therefore traps TERM, forwards it to git, and exits only once git is
+    gone, so even the last-resort TERM to `$last_pid` reaches git (though
+    not its transport, see below); a SIGKILLed wrapper still orphans git,
+    which is why the reap reports that case as 125. Both sources above
     reach git, so an empty or missing pid file (the wrapper-plumbing-bug
     symptom) does **not** leave git alive: the `ps` walk from the wrapper
     finds it anyway.
