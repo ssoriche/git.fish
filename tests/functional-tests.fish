@@ -3200,6 +3200,28 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     set -e _git_fetch_progress_job
     rm -f $cap_dir/stale-status $cap_dir/stale-status.pid
 
+    echo "Test 13: the wrapper refuses to write its pid through a planted symlink..."
+    set total_tests (math $total_tests + 1)
+    # "$0.pid" is predictable even though "$0" comes from mktemp: in a shared
+    # TMPDIR another user could plant <status-file>.pid -> <victim>. Drive
+    # the exact wrapper script by hand against such a symlink.
+    set -l sl_status (mktemp $cap_dir/sl-status.XXXXXX)
+    set -l sl_canary $cap_dir/sl-canary
+    printf 'canary-content\n' >$sl_canary
+    ln -s $sl_canary "$sl_status.pid"
+    sh -c (_git_fetch_progress_wrapper_script | string collect) $sl_status fpbad >/dev/null 2>&1
+    set -l canary_text (string collect <$sl_canary)
+    set -l fetch_rc (string trim <$sl_status)
+    if test "$canary_text" = canary-content
+        and test -L "$sl_status.pid"
+        and test -n "$fetch_rc"; and test "$fetch_rc" != 0
+        echo "✅ noclobber kept the symlink target intact; the fetch still ran"
+    else
+        echo "❌ canary='$canary_text' symlink="(test -L "$sl_status.pid"; and echo yes; or echo no)" fetch_rc='$fetch_rc'"
+        set failed_tests (math $failed_tests + 1)
+    end
+    rm -f $sl_status "$sl_status.pid" $sl_canary
+
     # Cleanup
     set -e TMPDIR
     cd "$orig_dir"
