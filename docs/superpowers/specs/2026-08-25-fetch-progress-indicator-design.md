@@ -151,35 +151,51 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   not be confirmed stopped (the double-failure path above). Callers keep ownership of
   user-facing success/warning lines — the helper draws only the in-progress
   indicator.
-- **Interruption (Ctrl-C / SIGTERM):** a signal aborts the foreground loop
-  mid-function, so the normal and timeout exits above never run. Without
-  handling, interactively (where the background job has its own process
-  group and does not see the Ctrl-C) the wrapper and `git fetch` would
-  outlive the command with no timeout enforcer left alive, and both scratch
-  files would leak — a regression from today's `timeout git fetch`, where
-  Ctrl-C kills the whole foreground group. The helper therefore follows the
-  same pattern `git-wclean` already uses for its own cleanup: two handler
-  functions in the same file, `_git_fetch_progress_on_int --on-signal INT`
-  and `_git_fetch_progress_on_term --on-signal TERM` (fish accepts one
-  signal per handler), both calling a shared `_git_fetch_progress_abort`.
-  The abort reads the in-flight job from the global
-  `_git_fetch_progress_job` (`<status-file> <wrapper-pid>`, set immediately
-  after the wrapper is spawned and erased on every return path), runs
+- **Interruption (Ctrl-C / SIGTERM):** the background job has its own
+  process group, so without handling the wrapper and `git fetch` would
+  outlive an interrupted command with no timeout enforcer left alive, and
+  both scratch files would leak — a regression from today's
+  `timeout git fetch`, where Ctrl-C kills the whole foreground group. All
+  cleanup goes through one shared `_git_fetch_progress_abort`, which reads
+  the in-flight job from the global `_git_fetch_progress_job`
+  (`<status-file> <wrapper-pid>`, set immediately after the wrapper is
+  spawned and erased on every return path), erases it, sets the global
+  flag `_git_fetch_progress_interrupted`, runs
   `_git_fetch_progress_kill_tree` with the wrapper pid and the pid-file
-  contents, waits briefly for the wrapper as the timeout path does, removes
-  both scratch files, clears the spinner line when stderr is a TTY, and
-  erases the global. When the global is unset the handlers are no-ops, so
-  they are inert outside a fetch. Non-interactively the signal already
-  reaches the wrapper and git through the shared process group; the abort's
-  kills then hit dead pids harmlessly and the file cleanup still runs.
-  Verified on fish 4.9: a `--on-signal INT` handler fires in a
-  non-interactive script when the fish process alone receives SIGINT during
-  a `sleep` loop, the loop does not resume, and the handler's `rm` runs.
+  contents, waits briefly for the wrapper as the timeout path does, clears
+  the spinner line when stderr is a TTY, and removes both scratch files.
+  When the job global is unset the abort is a no-op, so every hook below is
+  inert outside a fetch. The abort is reached two ways, because fish
+  behaves differently depending on who receives the signal (verified on
+  fish 4.9.3):
+  - *Interactive Ctrl-C* is delivered to the foreground external command —
+    the spinner's `sleep 0.1`, which runs in its own process group. Fish
+    itself never receives SIGINT and does **not** run `--on-signal INT`
+    handlers; it simply cancels the running function. So the helper also
+    defines `_git_fetch_progress_on_postexec --on-event fish_postexec`:
+    `fish_postexec` fires after every interactive command line, including
+    one cancelled by Ctrl-C, and runs the abort (then erases the
+    interrupted flag, since no helper loop is left to consume it). Verified
+    in a pty: the global is cleared, the fetch tree is killed, and `TMPDIR`
+    is emptied.
+  - *When fish itself receives the signal* (non-interactive scripts, CI,
+    `kill -INT <fish pid>`), the two handler functions in the same file —
+    `_git_fetch_progress_on_int --on-signal INT` and
+    `_git_fetch_progress_on_term --on-signal TERM` (fish accepts one signal
+    per handler, the same pattern `git-wclean` uses) — run the abort. Fish
+    does **not** cancel the function afterwards: the spinner loop resumes.
+    The loop therefore checks `_git_fetch_progress_interrupted` at the top
+    of every iteration; when it is set the loop breaks, the helper erases
+    the flag, makes sure both scratch files and the job global are gone,
+    and returns **130**.
+  The helper also erases a stale interrupted flag on entry, so an abort
+  with no loop to consume it can never cut the next fetch short.
 - Cleans up both scratch files (status and pid) on every path, including
-  interruption via the handlers above. The one global is
-  `_git_fetch_progress_job`, which exists only while a job is in flight; the
-  handler functions are defined at file load and carry no state of their
-  own. Does not check remote existence — the `contains origin (git remote)`
+  interruption via the hooks above. The globals are
+  `_git_fetch_progress_job`, which exists only while a job is in flight,
+  and `_git_fetch_progress_interrupted`, which exists only between an abort
+  and the loop (or postexec hook) that consumes it; the hook functions are
+  defined at file load and carry no state of their own. Does not check remote existence — the `contains origin (git remote)`
   guards stay in the callers.
 
 ## Call-site changes
@@ -221,13 +237,16 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     silent and simply exits 2, as its `--quiet` hook contract requires.
   - `git-wlist` is read-only, so it warns and proceeds like 124; the worst
     outcome is a slightly stale dashboard.
-- A Ctrl-C during the spinner runs the INT handler described under *Helper
+- A Ctrl-C during the spinner runs the abort described under *Helper
   contract → Interruption*: the fetch tree is killed, both scratch files are
-  removed, and the spinner line is cleared. The interrupted command does no
-  further work afterwards, and nothing outlives it — the same end state as
-  interrupting today's `timeout git fetch`. The handler cannot change what
-  the caller sees as an exit status (fish has already abandoned the
-  function), so callers need no 130-style branch.
+  removed, and the spinner line is cleared — the same end state as
+  interrupting today's `timeout git fetch`. Interactively fish has already
+  abandoned the command, and the `fish_postexec` hook cleans up after it.
+  When the signal reaches fish instead, the helper returns 130 and every
+  caller stops at once with 130 and does no further work: `git-wclean` (full
+  run, after its normal cleanup, and `--check`, silently), `git-wlist` (no
+  table), and `git-wrm` (which pops its `pushd` first; no message, since
+  the user pressed Ctrl-C).
 - If `mktemp` fails the helper returns 2 immediately (treated as fetch
   failure by callers).
 
@@ -265,14 +284,26 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     that returns 125 and assert that `git-wclean` (full run and `--check`)
     and `git-wrm` exit 2 having removed nothing, while `git-wlist` still
     prints its table.
-  - interruption: run the helper in a child `fish -c` against the hanging
-    `ssh://` fixture with a generous `--timeout`, a private `TMPDIR`, and
-    `GIT_SSH_COMMAND='sh -c "sleep 6048"'`; after the label line appears,
-    send SIGINT to the child fish pid *only* (not its process group — this
-    is what models the interactive case, where the background job never
-    sees the Ctrl-C). Assert the child fish exits, no `sleep 6048` process
-    survives, the recorded git pid is gone, and the private `TMPDIR` is
-    empty (both scratch files removed by the handler).
+  - interruption, non-interactive: run the helper in a child `fish -c`
+    against the hanging `ssh://` fixture with a generous `--timeout`, a
+    private `TMPDIR`, and `GIT_SSH_COMMAND='sh -c "sleep 6048"'`; the child
+    prints `rc=<status>` and exits with the helper's status. After the label
+    line appears, send SIGINT to the child fish pid *only* (fish itself
+    receives the signal, as in scripts and CI). Assert the child exits with
+    130, its stderr contains `rc=130`, no `sleep 6048` or `git fetch`
+    process survives, and the private `TMPDIR` is empty.
+  - interruption, interactive: Ctrl-C never reaches fish, so a child fish
+    registers a fake in-flight job (real scratch files plus a harmless
+    sleeping wrapper) and runs `emit fish_postexec`; assert both scratch
+    files are gone and neither the job global nor the interrupted flag
+    remains. The full interactive path is checked manually in a pty: start
+    the helper against the hanging fixture in `fish -i`, press Ctrl-C, and
+    confirm no `sleep 6048` survives, `TMPDIR` is empty, and
+    `_git_fetch_progress_job` is unset.
+  - 130 propagation: stub `_git_fetch_progress` to return 130 and assert
+    `git-wclean` (full run and `--check`, the latter silent), `git-wlist`,
+    and `git-wrm` all exit 130 having removed nothing, with `git-wrm`
+    leaving the cwd unchanged.
   - quiet: `--quiet` produces no output on any path, including 125 — the
     both-suppressed kill-tree fixture above is driven through the real
     helper (shim PATH without `ps`, pid file emptied before the timeout
