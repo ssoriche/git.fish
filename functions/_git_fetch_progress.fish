@@ -22,7 +22,8 @@ function _git_fetch_progress --description "Run git fetch in the background with
     #   _git_fetch_progress --quiet --label fetch --timeout 30 -- --prune origin
     #
     # EXIT STATUS
-    #   0    Fetch succeeded
+    #   0    Fetch succeeded (also when git exited 0 on its own just as the
+    #        timeout fired)
     #   1    Invalid arguments
     #   2    Fetch failed (also: mktemp failed under both TMPDIR and /tmp, or the
     #        status file came back empty)
@@ -159,6 +160,16 @@ function _git_fetch_progress --description "Run git fetch in the background with
         # ~2s means the fetch is not confirmed stopped: report 125.
         if not _git_fetch_progress_wait_gone $wrapper_pid
             set rc 125
+        else
+            # git may have exited 0 on its own just before the deadline; a
+            # git killed above writes its signal status (143), never 0.
+            set -l fetch_status ''
+            if test -r $status_file
+                read fetch_status <$status_file
+            end
+            if test "$fetch_status" = 0
+                set rc 0
+            end
         end
     else
         # Explicit reap on the normal path; the wrapper is already gone so
