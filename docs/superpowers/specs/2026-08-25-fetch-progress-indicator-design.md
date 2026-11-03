@@ -214,7 +214,12 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     one cancelled by Ctrl-C, and runs the abort (then erases the
     interrupted flag, since no helper loop is left to consume it). Verified
     in a pty: the global is cleared, the fetch tree is killed, and `TMPDIR`
-    is emptied.
+    is emptied. A Ctrl-C during a `fish_greeting` or prompt-hook fetch
+    (`git wclean --check`) has no command line, so no `fish_postexec`
+    follows; `_git_fetch_progress_on_prompt --on-event fish_prompt` does
+    the same cleanup at the next prompt (event handlers run one after
+    another, so a fetch started by another `fish_prompt` handler is never
+    in flight when it runs).
   - *When fish itself receives the signal* (non-interactive scripts, CI,
     `kill -INT <fish pid>`), the two handler functions in the same file —
     `_git_fetch_progress_on_int --on-signal INT` and
@@ -231,7 +236,7 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   interruption via the hooks above. The globals are
   `_git_fetch_progress_job`, which exists only while a job is in flight,
   and `_git_fetch_progress_interrupted`, which exists only between an abort
-  and the loop (or postexec hook) that consumes it; the hook functions are
+  and the loop (or postexec/prompt hook) that consumes it; the hook functions are
   defined at file load and carry no state of their own. Does not check remote existence — the `contains origin (git remote)`
   guards stay in the callers.
 
@@ -278,7 +283,8 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   contract → Interruption*: the fetch tree is killed, both scratch files are
   removed, and the spinner line is cleared — the same end state as
   interrupting today's `timeout git fetch`. Interactively fish has already
-  abandoned the command, and the `fish_postexec` hook cleans up after it.
+  abandoned the command, and the `fish_postexec` hook (or, for a greeting
+  or prompt hook, the `fish_prompt` hook) cleans up after it.
   When the signal reaches fish instead, the helper returns 130 and every
   caller stops at once with 130 and does no further work: `git-wclean` (full
   run, after its normal cleanup, and `--check`, silently), `git-wlist` (no
@@ -333,9 +339,9 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
     process survives, and the private `TMPDIR` is empty.
   - interruption, interactive: Ctrl-C never reaches fish, so a child fish
     registers a fake in-flight job (real scratch files plus a harmless
-    sleeping wrapper) and runs `emit fish_postexec`; assert both scratch
-    files are gone and neither the job global nor the interrupted flag
-    remains. The full interactive path is checked manually in a pty: start
+    sleeping wrapper) and runs `emit fish_postexec` (and, separately,
+    `emit fish_prompt`); assert both scratch files are gone and neither the
+    job global nor the interrupted flag remains. The full interactive path is checked manually in a pty: start
     the helper against the hanging fixture in `fish -i`, press Ctrl-C, and
     confirm no `sleep 6048` survives, `TMPDIR` is empty, and
     `_git_fetch_progress_job` is unset.
