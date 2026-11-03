@@ -3163,15 +3163,18 @@ function test_git_fetch_progress_callers --description "Test how wclean, wlist, 
 
     echo "Test 4: git-wrm treats 125 as fatal: exit 2, worktree kept..."
     set total_tests (math $total_tests + 1)
+    set -l pwd_before $PWD
     git-wrm "$wts_dir/merged" >$cap_dir/wrm 2>&1
     set -l st $status
+    set -l pwd_after $PWD
     set -l out (string collect <$cap_dir/wrm)
     if test $st -eq 2
         and test -d "$wts_dir/merged"
+        and test "$pwd_before" = "$pwd_after"
         and string match -q '*could not be confirmed stopped*' -- $out
         echo "✅ wrm refused to remove with exit 2"
     else
-        echo "❌ status=$st exists="(test -d "$wts_dir/merged"; and echo yes; or echo no)" output: $out"
+        echo "❌ status=$st exists="(test -d "$wts_dir/merged"; and echo yes; or echo no)" pwd_before=$pwd_before pwd_after=$pwd_after output: $out"
         set failed_tests (math $failed_tests + 1)
     end
 

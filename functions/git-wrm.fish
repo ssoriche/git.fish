@@ -237,6 +237,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         case 125
             printf "  Error: Fetch from %s timed out and could not be confirmed stopped.\n" $remote_name >&2
             printf "  Refusing to remove the worktree while that fetch may still be running.\n" >&2
+            popd >/dev/null
             return 2
         case '*'
             printf "  Warning: Failed to fetch from %s. Proceeding with local information.\n" $remote_name
