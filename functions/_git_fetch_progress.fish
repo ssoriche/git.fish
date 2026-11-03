@@ -200,3 +200,38 @@ function _git_fetch_progress_wait_gone --description "Wait up to ~2s for a pid t
     end
     return 1
 end
+
+function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an in-flight _git_fetch_progress job"
+    # A signal abandons _git_fetch_progress mid-loop, so neither its normal
+    # nor its timeout exit runs. Interactively the background job has its
+    # own process group and never sees the Ctrl-C, so without this the fetch
+    # would outlive the command with no timeout enforcer and both scratch
+    # files would leak. No-op when nothing is in flight.
+    set -q _git_fetch_progress_job
+    or return 0
+    set -l status_file $_git_fetch_progress_job[1]
+    set -l wrapper_pid $_git_fetch_progress_job[2]
+    set -e _git_fetch_progress_job
+
+    set -l git_pid ''
+    if test -r "$status_file.pid"
+        read git_pid <"$status_file.pid"
+    end
+    _git_fetch_progress_kill_tree $wrapper_pid $git_pid
+    or kill -TERM $wrapper_pid 2>/dev/null
+    _git_fetch_progress_wait_gone $wrapper_pid
+    if isatty stderr
+        printf '\r\033[K' >&2
+    end
+    rm -f $status_file "$status_file.pid"
+end
+
+# fish accepts one signal per handler, so two thin handlers share the abort
+# (same pattern as git-wclean's own cleanup handlers).
+function _git_fetch_progress_on_int --on-signal INT
+    _git_fetch_progress_abort
+end
+
+function _git_fetch_progress_on_term --on-signal TERM
+    _git_fetch_progress_abort
+end
