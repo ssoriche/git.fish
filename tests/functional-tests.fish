@@ -2983,7 +2983,51 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     # because a live git respawns its transport when the old one dies.
     pkill -f 'git fetch fp6047' 2>/dev/null
     pkill -f 'sleep 6047' 2>/dev/null
-    # TASK 4 TESTS GO HERE
+    echo "Test 8: SIGINT to the fish process alone kills the fetch tree and removes scratch files..."
+    set total_tests (math $total_tests + 1)
+    # A child fish runs the helper against a hanging transport. Signalling
+    # only the child's pid (not its process group) models an interactive
+    # Ctrl-C, where the background job sits in its own group and never sees
+    # the signal: only the INT handler can clean up.
+    set -lx GIT_SSH_COMMAND 'sh -c "sleep 6048"'
+    fish -c "set -p fish_function_path $test_functions_dir
+        source $test_functions_dir/_git_fetch_progress.fish
+        cd $repo_dir
+        _git_fetch_progress --label 'Fetching from fp6048' --timeout 30 -- fp6048" \
+        >$cap_dir/out8 2>$cap_dir/err8 &
+    set -l child $last_pid
+    set -e GIT_SSH_COMMAND
+    # Wait for the label line: the fetch is then in flight.
+    for _i in (seq 1 50)
+        test -s $cap_dir/err8; and break
+        sleep 0.1
+    end
+    sleep 0.5
+    kill -INT $child 2>/dev/null
+    set -l child_alive 1
+    for _i in (seq 1 40)
+        if not kill -0 $child 2>/dev/null
+            set child_alive 0
+            break
+        end
+        sleep 0.1
+    end
+    sleep 0.3
+    set -l transport (pgrep -f 'sleep 6048')
+    set -l gitproc (pgrep -f 'git fetch fp6048')
+    set -l leftovers $tmp_dir/*
+    if test $child_alive -eq 0
+        and test -z "$transport"
+        and test -z "$gitproc"
+        and test (count $leftovers) -eq 0
+        echo "✅ INT handler killed git and transport and emptied TMPDIR"
+    else
+        echo "❌ child_alive=$child_alive transport='$transport' git='$gitproc' leftovers=$leftovers"
+        set failed_tests (math $failed_tests + 1)
+    end
+    kill -TERM $child 2>/dev/null
+    pkill -f 'sleep 6048' 2>/dev/null
+    pkill -f 'git fetch fp6048' 2>/dev/null
 
     # Cleanup
     set -e TMPDIR
