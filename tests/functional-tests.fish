@@ -3017,7 +3017,7 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     set -l child (string trim <$child_pidfile)
     kill -INT $child 2>/dev/null
     set -l child_alive 1
-    for _i in (seq 1 40)
+    for _i in (seq 1 80)
         if not kill -0 $child 2>/dev/null; and test -s $child_rcfile
             set child_alive 0
             break
@@ -3072,6 +3072,33 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
         set failed_tests (math $failed_tests + 1)
     end
     kill -TERM $pe_wrapper 2>/dev/null
+
+    echo "Test 10: timeout whose wrapper never confirms gone -> 125, not 124..."
+    set total_tests (math $total_tests + 1)
+    # A wrapper still alive ~2s after the kill means git may still be running.
+    # Hard to stage for real (git dies on SIGTERM), so shadow the wait with a
+    # stub that always reports "still alive" and drive the real timeout path.
+    function _git_fetch_progress_wait_gone
+        return 1
+    end
+    set -lx GIT_SSH_COMMAND 'sh -c "sleep 6047"'
+    _git_fetch_progress --label "Fetching from fp6047" --timeout 1 -- fp6047 \
+        >$cap_dir/out10 2>$cap_dir/err10
+    set -l st $status
+    set -e GIT_SSH_COMMAND
+    functions -e _git_fetch_progress_wait_gone
+    source $test_functions_dir/_git_fetch_progress.fish
+    if test $st -eq 125
+        echo "✅ unconfirmed wrapper exit downgrades the timeout to 125"
+    else
+        echo "❌ status=$st (expected 125)"
+        set failed_tests (math $failed_tests + 1)
+    end
+    sleep 0.3
+    pkill -f 'git fetch fp6047' 2>/dev/null
+    pkill -f 'sleep 6047' 2>/dev/null
+    set -l stray $tmp_dir/*
+    test (count $stray) -gt 0; and rm -f $stray
 
     # Cleanup
     set -e TMPDIR
