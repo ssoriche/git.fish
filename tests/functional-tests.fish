@@ -3146,7 +3146,34 @@ function test_git_fetch_progress_callers --description "Test how wclean, wlist, 
         set failed_tests (math $failed_tests + 1)
     end
 
-    # TASK 6 TESTS GO HERE
+    echo "Test 3: git-wlist warns on 125 and still prints its table..."
+    set total_tests (math $total_tests + 1)
+    git-wlist >$cap_dir/wlist 2>&1
+    set -l st $status
+    set -l out (string collect <$cap_dir/wlist)
+    if test $st -eq 0
+        and string match -q '*NAME*' -- $out
+        and string match -q '*merged-copy*' -- $out
+        and string match -q '*warning:*' -- $out
+        echo "✅ wlist: warning plus a full table"
+    else
+        echo "❌ status=$st output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: git-wrm treats 125 as fatal: exit 2, worktree kept..."
+    set total_tests (math $total_tests + 1)
+    git-wrm "$wts_dir/merged" >$cap_dir/wrm 2>&1
+    set -l st $status
+    set -l out (string collect <$cap_dir/wrm)
+    if test $st -eq 2
+        and test -d "$wts_dir/merged"
+        and string match -q '*could not be confirmed stopped*' -- $out
+        echo "✅ wrm refused to remove with exit 2"
+    else
+        echo "❌ status=$st exists="(test -d "$wts_dir/merged"; and echo yes; or echo no)" output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
 
     # Restore the real helper and clean up
     functions -e _git_fetch_progress
