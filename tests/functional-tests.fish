@@ -2744,6 +2744,119 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
     return $failed_tests
 end
 
+function test_git_fetch_progress --description "Test _git_fetch_progress: success, failure, timeout, kill-tree, quiet, interruption"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing _git_fetch_progress..."
+
+    set -p fish_function_path $test_functions_dir
+    # The kill-tree and abort siblings live in this file, so autoload alone
+    # would not find them; source it explicitly.
+    source $test_functions_dir/_git_fetch_progress.fish
+
+    # Fixture: a bare remote, a clone, a private TMPDIR (so "no scratch files
+    # left behind" is a directory-is-empty check), and a capture dir for
+    # stdout/stderr that must NOT live under TMPDIR.
+    set -l remote_dir /tmp/git-fish-fp-remote-(random).git
+    set -l repo_dir /tmp/git-fish-fp-repo-(random)
+    set -l tmp_dir /tmp/git-fish-fp-tmp-(random)
+    set -l cap_dir /tmp/git-fish-fp-cap-(random)
+    rm -rf "$remote_dir" "$repo_dir" "$tmp_dir" "$cap_dir"
+    mkdir -p "$tmp_dir" "$cap_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$repo_dir" >/dev/null 2>&1
+    git -C "$repo_dir" config user.name "Test User"
+    git -C "$repo_dir" config user.email "test@example.com"
+    git -C "$repo_dir" config commit.gpgsign false
+    echo "# Test" >"$repo_dir/README.md"
+    git -C "$repo_dir" add README.md
+    git -C "$repo_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$repo_dir" push -u origin main >/dev/null 2>&1
+    # Remotes that can never be reached: a missing local path (fails fast)
+    # and ssh:// URLs whose transport is replaced by GIT_SSH_COMMAND below
+    # (hangs without touching the network). The remote NAMES are unique so
+    # pgrep -f can find the git process by its argv.
+    git -C "$repo_dir" remote add fpbad /tmp/git-fish-fp-missing-(random)
+    git -C "$repo_dir" remote add fp6047 ssh://localhost/nonexistent-6047.git
+    git -C "$repo_dir" remote add fp6048 ssh://localhost/nonexistent-6048.git
+
+    set -l orig_dir (pwd)
+    cd "$repo_dir"
+    set -lx TMPDIR $tmp_dir
+
+    echo "Test 1: successful fetch -> 0, label once on stderr, stdout empty, no scratch files..."
+    set total_tests (math $total_tests + 1)
+    _git_fetch_progress --label "Fetching from origin" --timeout 10 -- --prune origin \
+        >$cap_dir/out1 2>$cap_dir/err1
+    set -l st $status
+    set -l err_text (string collect <$cap_dir/err1)
+    set -l leftovers $tmp_dir/*
+    if test $st -eq 0
+        and test ! -s $cap_dir/out1
+        and test "$err_text" = "Fetching from origin…"
+        and test (count $leftovers) -eq 0
+        and not set -q _git_fetch_progress_job
+        echo "✅ success path: status 0, one label line on stderr, clean TMPDIR"
+    else
+        echo "❌ status=$st stderr='$err_text' stdout-size="(wc -c <$cap_dir/out1)" leftovers=$leftovers"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: fetch from a missing path -> 2, scratch files removed..."
+    set total_tests (math $total_tests + 1)
+    _git_fetch_progress --label "Fetching from fpbad" --timeout 10 -- fpbad \
+        >$cap_dir/out2 2>$cap_dir/err2
+    set -l st $status
+    set -l leftovers $tmp_dir/*
+    if test $st -eq 2; and test ! -s $cap_dir/out2; and test (count $leftovers) -eq 0
+        echo "✅ failure path: status 2, clean TMPDIR"
+    else
+        echo "❌ status=$st leftovers=$leftovers"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 3: argument validation -> 1..."
+    set total_tests (math $total_tests + 1)
+    set -l misses 0
+    _git_fetch_progress --timeout 5 -- origin >/dev/null 2>&1
+    test $status -eq 1; or set misses (math $misses + 1)
+    _git_fetch_progress --label x -- origin >/dev/null 2>&1
+    test $status -eq 1; or set misses (math $misses + 1)
+    _git_fetch_progress --label x --timeout 0 -- origin >/dev/null 2>&1
+    test $status -eq 1; or set misses (math $misses + 1)
+    _git_fetch_progress --label x --timeout abc -- origin >/dev/null 2>&1
+    test $status -eq 1; or set misses (math $misses + 1)
+    _git_fetch_progress --label x --timeout 5 >/dev/null 2>&1
+    test $status -eq 1; or set misses (math $misses + 1)
+    if test $misses -eq 0
+        echo "✅ missing/invalid --label, --timeout, or fetch args exit 1"
+    else
+        echo "❌ $misses validation cases did not exit 1"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # TASK 2 TESTS GO HERE
+    # TASK 3 TESTS GO HERE
+    # TASK 4 TESTS GO HERE
+
+    # Cleanup
+    set -e TMPDIR
+    cd "$orig_dir"
+    rm -rf "$remote_dir" "$repo_dir" "$tmp_dir" "$cap_dir"
+
+    echo "📊 _git_fetch_progress results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -2881,6 +2994,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_check
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_fetch_progress
     set total_failed (math $total_failed + $status)
 
     echo ""
