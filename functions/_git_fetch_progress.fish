@@ -34,8 +34,11 @@ function _git_fetch_progress --description "Run git fetch in the background with
     #   130  Interrupted (SIGINT/SIGTERM reached fish); the fetch was killed
     #
     # NOTES
-    #   - GIT_TERMINAL_PROMPT=0 is always set: a background job cannot answer a
-    #     credential prompt, so such a fetch fails instead of hanging.
+    #   - A background job cannot answer a credential prompt, so prompting is
+    #     disabled: GIT_TERMINAL_PROMPT=0 stops terminal prompts, and an empty
+    #     GIT_ASKPASS and SSH_ASKPASS stop askpass helpers and dialogs (git
+    #     skips askpass when GIT_ASKPASS is set but empty, which also overrides
+    #     core.askPass). Such a fetch fails instead of hanging or popping up.
     #   - Interruption. _git_fetch_progress_abort kills the fetch tree and
     #     removes both scratch files; it is reached two ways:
     #     * Interactive Ctrl-C goes to the foreground external command (the
@@ -189,7 +192,8 @@ function _git_fetch_progress_wrapper_script --description "Print the sh script t
     # under noclobber (set -C, scoped to a subshell): a path planted there
     # (file or symlink, dangling or not) is refused and the pid file is just
     # absent. The kill never relies on the pid file alone (the ps walk).
-    printf '%s\n' 'GIT_TERMINAL_PROMPT=0 git fetch "$@" >/dev/null 2>&1 &' \
+    printf '%s\n' \
+        'GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= git fetch "$@" >/dev/null 2>&1 &' \
         '(set -C; echo $! >"$0.pid") 2>/dev/null; wait $!; echo $? >"$0"'
 end
 
