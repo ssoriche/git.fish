@@ -92,7 +92,7 @@ source functions/git-wadd.fish
   prints no warnings (callers own those). 125 = timed out but not confirmed
   dead: `git-wclean`/`git-wrm` abort with exit 2, `git-wlist` warns. INT/TERM
   handlers plus `fish_postexec` and `fish_prompt` hooks (interactive Ctrl-C
-  never reaches fish) kill the fetch tree and remove the scratch files; 130 = interrupted, and
+  never reaches fish) kill the fetch tree and remove the scratch files (kept only if the wrapper survives SIGKILL); 130 = interrupted, and
   every caller stops with 130.
 
 **Branch management**

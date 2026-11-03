@@ -233,7 +233,9 @@ _git_fetch_progress --label <text> --timeout <secs> [--quiet] -- <git-fetch-args
   The helper also erases a stale interrupted flag on entry, so an abort
   with no loop to consume it can never cut the next fetch short.
 - Cleans up both scratch files (status and pid) on every path, including
-  interruption via the hooks above. The globals are
+  interruption via the hooks above; the files are left in place only when
+  the wrapper cannot be confirmed gone even after SIGKILL, because deleting
+  them then would just let the wrapper recreate the status file. The globals are
   `_git_fetch_progress_job`, which exists only while a job is in flight,
   and `_git_fetch_progress_interrupted`, which exists only between an abort
   and the loop (or postexec/prompt hook) that consumes it; the hook functions are
