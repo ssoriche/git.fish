@@ -2652,10 +2652,8 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
     git -C "$wts_dir/chk-gone" add g.txt
     git -C "$wts_dir/chk-gone" commit -m "gone work" >/dev/null 2>&1
     git -C "$wts_dir/chk-gone" push -u origin chk-gone >/dev/null 2>&1
-    # Deliberately push --delete here (NOT remote branch -D): it prunes the
-    # local tracking ref immediately, so this test passes even on machines
-    # with no timeout utility where --check skips its fetch. wclean's own
-    # --prune coverage lives in test_git_wclean_states.
+    # push --delete prunes the local tracking ref immediately; wclean's own
+    # --prune coverage lives in test_git_wclean_states and in Test 4 below.
     git -C "$main_dir" push origin --delete chk-gone >/dev/null 2>&1
     set -l out (git-wclean --check 2>&1)
     set -l line_count (count $out)
@@ -2670,13 +2668,12 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
         set failed_tests (math $failed_tests + 1)
     end
 
-    echo "Test 4: no timeout utility -> fetch skipped (unpruned gone stays invisible)..."
+    echo "Test 4: fetch runs without any timeout utility (native timeout) and prunes the gone ref..."
     set total_tests (math $total_tests + 1)
-    # Remove the pruned tracking ref knowledge: recreate a deleted remote
-    # branch whose tracking ref is still present locally, then strip
-    # timeout/gtimeout from PATH. If --check skipped the fetch (correct), the
-    # ref is not pruned and nothing is reapable -> silent. If it fetched
-    # anyway, the ref gets pruned and the nudge appears -> fail.
+    # A deleted remote branch whose tracking ref is still present locally is
+    # invisible until a fetch --prune runs. The old design skipped the fetch
+    # when timeout/gtimeout were missing; the helper bounds it natively, so
+    # with a PATH that has no timeout utility the nudge MUST still appear.
     echo y | git-wclean "$wts_dir" >/dev/null 2>&1 # clear the gone worktree first
     git -C "$main_dir" worktree add "$wts_dir/chk-gone2" -b chk-gone2 >/dev/null 2>&1
     echo g >"$wts_dir/chk-gone2/g.txt"
@@ -2686,17 +2683,20 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
     git -C "$remote_dir" branch -D chk-gone2 >/dev/null 2>&1
     set -l shim_dir /tmp/git-fish-chk-bin-(random)
     mkdir -p "$shim_dir"
-    ln -s (command -s git) "$shim_dir/git"
-    ln -s (command -s date) "$shim_dir/date"
-    ln -s (command -s basename) "$shim_dir/basename"
+    # Everything the helper and git need; deliberately no timeout/gtimeout.
+    for tool in git date basename dirname sh mktemp sleep ps rm kill
+        ln -s (command -s $tool) "$shim_dir/$tool"
+    end
     set -l orig_path $PATH
     set -lx PATH $shim_dir
     set -l out (git-wclean --check 2>&1)
     set -l st $status
     set -lx PATH $orig_path
     rm -rf "$shim_dir"
-    if test $st -eq 0; and test -z "$out"
-        echo "✅ fetch skipped without a timeout utility (silent, exit 0)"
+    if test $st -eq 0
+        and test (count $out) -eq 1
+        and string match -q "*1 gone*" -- $out
+        echo "✅ fetch ran and pruned without a timeout utility (one-line nudge, exit 0)"
     else
         echo "❌ status=$st output='$out'"
         set failed_tests (math $failed_tests + 1)
@@ -2704,21 +2704,24 @@ function test_git_wclean_check --description "Test git wclean --check silence, o
 
     echo "Test 5: --check never invokes gh, even with a github remote..."
     set total_tests (math $total_tests + 1)
-    # Arm the forge gate (github URL + gh on PATH) and prove --no-forge holds.
-    # PATH also omits timeout/gtimeout so the fetch is skipped: no network,
-    # no credential prompt, and the URL rewrite is inert.
-    git -C "$main_dir" remote set-url origin https://github.com/example/repo.git
+    # Arm the forge gate (github.com URL + gh on PATH) and prove --no-forge
+    # holds. The fetch now always runs, so point the URL at github.com over
+    # ssh and replace the transport with a command that fails at once: no
+    # network, no prompt, and the classifier still sees a github.com remote.
+    git -C "$main_dir" remote set-url origin ssh://git@github.com/example/repo.git
     set -l shim_dir /tmp/git-fish-chk-gh-(random)
     mkdir -p "$shim_dir"
-    ln -s (command -s git) "$shim_dir/git"
-    ln -s (command -s date) "$shim_dir/date"
-    ln -s (command -s basename) "$shim_dir/basename"
+    for tool in git date basename dirname sh mktemp sleep ps rm kill
+        ln -s (command -s $tool) "$shim_dir/$tool"
+    end
     printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\necho MERGED\n' "$shim_dir" >"$shim_dir/gh"
     chmod +x "$shim_dir/gh"
     set -l orig_path2 $PATH
     set -lx PATH $shim_dir
+    set -lx GIT_SSH_COMMAND 'sh -c "exit 255"'
     git-wclean --check >/dev/null 2>&1
     set -l st $status
+    set -e GIT_SSH_COMMAND
     set -lx PATH $orig_path2
     if test $st -eq 0; and not test -f "$shim_dir/gh-called.log"
         echo "✅ --check classified with --no-forge (gh stub never invoked)"
@@ -3038,6 +3041,131 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     return $failed_tests
 end
 
+function test_git_fetch_progress_callers --description "Test how wclean, wlist, and wrm react to an unconfirmed fetch timeout (125)"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing callers' handling of _git_fetch_progress status 125..."
+
+    set -p fish_function_path $test_functions_dir
+    source $test_functions_dir/git-wclean.fish
+    source $test_functions_dir/git-wlist.fish
+    source $test_functions_dir/git-wrm.fish
+
+    # Fake HOME so a real user config cannot change the outcome
+    set -l fake_home /tmp/git-fish-fpc-home-(random)
+    mkdir -p "$fake_home"
+    set -l orig_home $HOME
+    set -lx HOME $fake_home
+
+    set -l cap_dir /tmp/git-fish-fpc-cap-(random)
+    mkdir -p "$cap_dir"
+    set -l remote_dir /tmp/git-fish-fpc-remote-(random).git
+    set -l main_dir /tmp/git-fish-fpc-main-(random)
+    set -l wts_dir /tmp/git-fish-fpc-wts-(random)
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+    # A merged worktree: removable by every command if the fetch were fine
+    mkdir -p "$wts_dir"
+    git -C "$main_dir" worktree add "$wts_dir/merged" -b merged-copy >/dev/null 2>&1
+
+    set -l orig_dir (pwd)
+    cd "$main_dir"
+
+    # Stub the helper: fish functions are global, so this shadows the
+    # autoloaded one until it is erased at the end of this test.
+    function _git_fetch_progress
+        return 125
+    end
+
+    echo "Test 1: git-wclean treats 125 as fatal: exit 2, removes nothing, explains why..."
+    set total_tests (math $total_tests + 1)
+    echo y | git-wclean "$wts_dir" >$cap_dir/wclean1 2>&1
+    set -l st $status
+    set -l out (string collect <$cap_dir/wclean1)
+    if test $st -eq 2
+        and test -d "$wts_dir/merged"
+        and string match -q '*could not be confirmed stopped*' -- $out
+        echo "✅ wclean aborted with exit 2 and the worktree intact"
+    else
+        echo "❌ status=$st exists="(test -d "$wts_dir/merged"; and echo yes; or echo no)" output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 1a: wclean's interrupt handler aborts an in-flight fetch before exiting..."
+    set total_tests (math $total_tests + 1)
+    # The handler ends in `exit 130`, so drive it in a child fish. A fake
+    # in-flight job: a real scratch file plus a harmless sleeping wrapper.
+    set -l fake_status $cap_dir/fake-status
+    touch $fake_status "$fake_status.pid"
+    sleep 6046 &
+    set -l fake_wrapper $last_pid
+    fish -c "set -p fish_function_path $test_functions_dir
+        source $test_functions_dir/git-wclean.fish
+        source $test_functions_dir/_git_fetch_progress.fish
+        set -g _git_fetch_progress_job $fake_status $fake_wrapper
+        _wclean_cleanup_handler" >/dev/null 2>&1
+    set -l st $status
+    sleep 0.3
+    set -l wrapper_alive 0
+    kill -0 $fake_wrapper 2>/dev/null; and set wrapper_alive 1
+    if test $st -eq 130; and test ! -e $fake_status; and test ! -e "$fake_status.pid"
+        echo "✅ handler exited 130 after removing the fetch scratch files"
+    else
+        echo "❌ status=$st status-file-exists="(test -e $fake_status; and echo yes; or echo no)" wrapper_alive=$wrapper_alive"
+        set failed_tests (math $failed_tests + 1)
+    end
+    kill -TERM $fake_wrapper 2>/dev/null
+
+    echo "Test 2: git-wclean --check exits 2 silently on 125..."
+    set total_tests (math $total_tests + 1)
+    git-wclean --check >$cap_dir/check 2>&1
+    set -l st $status
+    set -l out (string collect <$cap_dir/check)
+    if test $st -eq 2; and test -z "$out"
+        echo "✅ --check: exit 2, no output"
+    else
+        echo "❌ status=$st output='$out'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # TASK 6 TESTS GO HERE
+
+    # Restore the real helper and clean up
+    functions -e _git_fetch_progress
+    source $test_functions_dir/_git_fetch_progress.fish
+    set -lx HOME $orig_home
+    cd "$orig_dir"
+    git -C "$main_dir" worktree prune >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$wts_dir" "$fake_home" "$cap_dir"
+    set -e _wclean_config_protected_branches
+    set -e _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs
+    set -e _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout
+    set -e _wclean_config_stale_days
+
+    echo "📊 fetch-progress caller results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -3180,6 +3308,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_fetch_progress
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_fetch_progress_callers
     set total_failed (math $total_failed + $status)
 
     echo ""
