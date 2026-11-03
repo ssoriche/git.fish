@@ -120,3 +120,62 @@ function _git_fetch_progress --description "Run git fetch in the background with
     set -e _git_fetch_progress_job
     return $rc
 end
+
+function _git_fetch_progress_kill_tree --description "SIGTERM wrapper descendants and/or git pid"
+    # Two independent sources, union of targets, never the wrapper itself
+    # (killing the wrapper by signal would make interactive fish print a
+    # "Job terminated" notice; the wrapper exits on its own once git dies):
+    #   1. every descendant of <wrapper-pid> by a breadth-first walk of
+    #      'ps -eo pid=,ppid=' - reaches git AND its ssh/remote-helper
+    #      children, which git does not signal itself;
+    #   2. <git-pid> from the pid file - reaches git even without ps.
+    # Returns 0 when at least one source contributed, 1 when neither did.
+    set -l wrapper_pid $argv[1]
+    set -l git_pid $argv[2]
+    set -l targets
+    set -l have_source 0
+
+    if command -q ps
+        set -l table (command ps -eo pid=,ppid= 2>/dev/null)
+        if test $status -eq 0
+            set have_source 1
+            set -l frontier $wrapper_pid
+            while test (count $frontier) -gt 0
+                set -l next
+                for line in $table
+                    set -l fields (string split -n ' ' -- (string trim -- $line))
+                    if contains -- $fields[2] $frontier
+                        set -a targets $fields[1]
+                        set -a next $fields[1]
+                    end
+                end
+                set frontier $next
+            end
+        end
+    end
+
+    if test -n "$git_pid"
+        set have_source 1
+        contains -- $git_pid $targets
+        or set -a targets $git_pid
+    end
+
+    if test $have_source -eq 0
+        return 1
+    end
+    for pid in $targets
+        kill -TERM $pid 2>/dev/null
+    end
+    return 0
+end
+
+function _git_fetch_progress_wait_gone --description "Wait up to ~2s for a pid to disappear"
+    set -l tries 0
+    while test $tries -lt 20
+        kill -0 $argv[1] 2>/dev/null
+        or return 0
+        sleep 0.1
+        set tries (math $tries + 1)
+    end
+    return 1
+end

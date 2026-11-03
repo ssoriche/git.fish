@@ -2844,7 +2844,73 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
         set failed_tests (math $failed_tests + 1)
     end
 
-    # TASK 2 TESTS GO HERE
+    # Kill-tree fallbacks are driven against a hand-built wrapper shaped like
+    # the real one: sh backgrounds a uniquely named sleep, records its pid in
+    # a file, and waits. Each case removes one source of truth.
+    echo "Test 4a: kill-tree via the ps walk alone (empty git pid)..."
+    set total_tests (math $total_tests + 1)
+    set -l kt_pidfile $cap_dir/kt-a.pid
+    sh -c 'sleep 6049 & echo $! >"$0"; wait' $kt_pidfile 2>/dev/null &
+    set -l kt_wrapper $last_pid
+    sleep 0.3
+    _git_fetch_progress_kill_tree $kt_wrapper ''
+    set -l st $status
+    sleep 0.3
+    set -l survivors (pgrep -f 'sleep 6049')
+    if test $st -eq 0; and test -z "$survivors"
+        echo "✅ ps walk found and killed the wrapper's child"
+    else
+        echo "❌ status=$st survivors='$survivors'"
+        set failed_tests (math $failed_tests + 1)
+        pkill -f 'sleep 6049' 2>/dev/null
+    end
+
+    echo "Test 4b: kill-tree via the pid file alone (no ps on PATH)..."
+    set total_tests (math $total_tests + 1)
+    set -l kt_pidfile $cap_dir/kt-b.pid
+    sh -c 'sleep 6049 & echo $! >"$0"; wait' $kt_pidfile 2>/dev/null &
+    set -l kt_wrapper $last_pid
+    sleep 0.3
+    set -l kt_gitpid (string trim <$kt_pidfile)
+    set -l shim_dir $cap_dir/shim-no-ps
+    mkdir -p $shim_dir
+    ln -s (command -s kill) $shim_dir/kill
+    set -l orig_path $PATH
+    set -lx PATH $shim_dir
+    _git_fetch_progress_kill_tree $kt_wrapper $kt_gitpid
+    set -l st $status
+    set -lx PATH $orig_path
+    sleep 0.3
+    set -l survivors (pgrep -f 'sleep 6049')
+    if test $st -eq 0; and test -z "$survivors"
+        echo "✅ pid-file source killed git without ps"
+    else
+        echo "❌ status=$st survivors='$survivors'"
+        set failed_tests (math $failed_tests + 1)
+        pkill -f 'sleep 6049' 2>/dev/null
+    end
+
+    echo "Test 4c: both sources suppressed -> returns 1 and (honestly) kills nothing..."
+    set total_tests (math $total_tests + 1)
+    set -l kt_pidfile $cap_dir/kt-c.pid
+    sh -c 'sleep 6049 & echo $! >"$0"; wait' $kt_pidfile 2>/dev/null &
+    set -l kt_wrapper $last_pid
+    sleep 0.3
+    set -lx PATH $shim_dir
+    _git_fetch_progress_kill_tree $kt_wrapper ''
+    set -l st $status
+    set -lx PATH $orig_path
+    set -l survivors (pgrep -f 'sleep 6049')
+    if test $st -eq 1; and test -n "$survivors"
+        echo "✅ no ps and empty pid -> 1, child left running (this is the 125 case)"
+    else
+        echo "❌ status=$st survivors='$survivors'"
+        set failed_tests (math $failed_tests + 1)
+    end
+    # The test owns this orphan: kill it and the wrapper now.
+    kill -TERM (string trim <$kt_pidfile) 2>/dev/null
+    kill -TERM $kt_wrapper 2>/dev/null
+    pkill -f 'sleep 6049' 2>/dev/null
     # TASK 3 TESTS GO HERE
     # TASK 4 TESTS GO HERE
 
