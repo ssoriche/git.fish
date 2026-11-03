@@ -70,6 +70,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   1    Invalid arguments or worktree not found
     #   2    Git command failed
     #   3    Commits not merged upstream (use --force to override)
+    #   130  Interrupted (Ctrl-C during the fetch)
 
     # Parse command line arguments
     argparse --name=git-wrm h/help n/dry-run f/force no-delete-branch no-forge -- $argv
@@ -227,7 +228,8 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     # Fetch latest from the remote so the merge check uses up-to-date refs.
     # The shared helper bounds the fetch itself (30s here; git-wrm does not
     # read the wclean config) and never prompts. 125 means the timed-out
-    # fetch could not be confirmed dead; a removal must not race it.
+    # fetch could not be confirmed dead; a removal must not race it. 130
+    # means the user interrupted it: stop quietly.
     _git_fetch_progress --label "Fetching latest from $remote_name" --timeout 30 \
         -- $remote_name $branch_name
     switch $status
@@ -239,6 +241,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             printf "  Refusing to remove the worktree while that fetch may still be running.\n" >&2
             popd >/dev/null
             return 2
+        case 130
+            popd >/dev/null
+            return 130
         case '*'
             printf "  Warning: Failed to fetch from %s. Proceeding with local information.\n" $remote_name
     end
