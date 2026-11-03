@@ -63,8 +63,11 @@ function _git_fetch_progress --description "Run git fetch in the background with
         return 1
     end
 
-    # A stale flag (an abort with no loop to consume it) must not cut this
-    # fetch short.
+    # A job still registered here was cancelled before any fish_postexec ran
+    # (Ctrl-C inside a prompt hook); no live job can be in flight in this
+    # process now, so abort it rather than orphan it. Then drop the stale flag
+    # (an abort with no loop to consume it) so it cannot cut this fetch short.
+    _git_fetch_progress_abort
     set -e _git_fetch_progress_interrupted
 
     set -l quiet 0
@@ -169,6 +172,11 @@ function _git_fetch_progress --description "Run git fetch in the background with
         end
     end
 
+    # A signal that arrived during the timeout branch's wait wins over 124/125.
+    if set -q _git_fetch_progress_interrupted
+        set -e _git_fetch_progress_interrupted
+        set rc 130
+    end
     rm -f $status_file $pid_file
     set -e _git_fetch_progress_job
     return $rc
@@ -234,11 +242,11 @@ function _git_fetch_progress_wait_gone --description "Wait up to ~2s for a pid t
 end
 
 function _git_fetch_progress_abort --description "Ctrl-C/SIGTERM cleanup for an in-flight _git_fetch_progress job"
-    # A signal abandons _git_fetch_progress mid-loop, so neither its normal
-    # nor its timeout exit runs. Interactively the background job has its
-    # own process group and never sees the Ctrl-C, so without this the fetch
-    # would outlive the command with no timeout enforcer and both scratch
-    # files would leak. No-op when nothing is in flight.
+    # When fish itself receives the signal, the handler runs this and the
+    # helper then sees the interrupted flag and returns 130. Interactively the
+    # signal goes to the foreground command, fish abandons the function, and
+    # fish_postexec runs this. Without it the fetch would outlive the command
+    # and both scratch files would leak. No-op when nothing is in flight.
     set -q _git_fetch_progress_job
     or return 0
     set -l status_file $_git_fetch_progress_job[1]

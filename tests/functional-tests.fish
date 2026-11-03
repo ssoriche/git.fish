@@ -3141,6 +3141,65 @@ function test_git_fetch_progress --description "Test _git_fetch_progress: succes
     set -l stray $tmp_dir/*
     test (count $stray) -gt 0; and rm -f $stray
 
+    echo "Test 11: a signal during the timeout wait window returns 130, not 124/125..."
+    set total_tests (math $total_tests + 1)
+    # Shadow the wait with a stub that simulates the abort handler setting the
+    # flag while the helper sits in the wait.
+    function _git_fetch_progress_wait_gone
+        set -g _git_fetch_progress_interrupted 1
+        return 0
+    end
+    set -lx GIT_SSH_COMMAND 'sh -c "sleep 6047"'
+    _git_fetch_progress --label "Fetching from fp6047" --timeout 1 -- fp6047 \
+        >$cap_dir/out11 2>$cap_dir/err11
+    set -l st $status
+    set -e GIT_SSH_COMMAND
+    functions -e _git_fetch_progress_wait_gone
+    source $test_functions_dir/_git_fetch_progress.fish
+    set -l leftovers $tmp_dir/*
+    if test $st -eq 130; and test (count $leftovers) -eq 0
+        and not set -q _git_fetch_progress_interrupted
+        and not set -q _git_fetch_progress_job
+        echo "✅ interrupt during the timeout wait returns 130 and cleans up"
+    else
+        echo "❌ status=$st (expected 130) leftovers=$leftovers"
+        set failed_tests (math $failed_tests + 1)
+    end
+    pkill -f 'sleep 6047' 2>/dev/null
+    pkill -f 'git fetch fp6047' 2>/dev/null
+    sleep 0.3
+    set -l stray $tmp_dir/*
+    test (count $stray) -gt 0; and rm -f $stray
+
+    echo "Test 12: a stale registered job is aborted on entry..."
+    set total_tests (math $total_tests + 1)
+    # Same shape as the real wrapper: an sh that exits once its child dies
+    # (the abort kills the descendants, never the wrapper itself).
+    touch $cap_dir/stale-status
+    sh -c 'sleep 6043 & echo $! >"$0.pid"; wait $!' $cap_dir/stale-status >/dev/null 2>&1 &
+    set -l stale_pid $last_pid
+    for _i in (seq 1 30)
+        test -s $cap_dir/stale-status.pid; and break
+        sleep 0.1
+    end
+    set -g _git_fetch_progress_job $cap_dir/stale-status $stale_pid
+    _git_fetch_progress --quiet --label x --timeout 10 -- --prune origin \
+        >$cap_dir/out12 2>$cap_dir/err12
+    set -l st $status
+    sleep 0.2
+    set -l stale_alive 0
+    kill -0 $stale_pid 2>/dev/null; and set stale_alive 1
+    kill -TERM $stale_pid 2>/dev/null
+    if test $st -eq 0; and not test -e $cap_dir/stale-status
+        and not test -e $cap_dir/stale-status.pid; and test $stale_alive -eq 0
+        echo "✅ stale job killed and its files removed at entry"
+    else
+        printf '❌ status=%s alive=%s files=%s\n' $st $stale_alive (string join , (path filter $cap_dir/stale*))
+        set failed_tests (math $failed_tests + 1)
+    end
+    set -e _git_fetch_progress_job
+    rm -f $cap_dir/stale-status $cap_dir/stale-status.pid
+
     # Cleanup
     set -e TMPDIR
     cd "$orig_dir"
