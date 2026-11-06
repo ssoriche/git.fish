@@ -283,8 +283,9 @@ git wrm --no-forge ~/worktrees/feature-branch
   installed, a branch whose PR is `MERGED` is treated as merged (the same rule
   behind the `pr-merged` state in `git wlist`). The PR's head commit must cover
   the worktree HEAD, so a reused branch name with new commits is not mistaken
-  for the old merged PR. A PR that was closed without merging is still refused.
-  `--no-forge` disables the lookup.
+  for the old merged PR, and the PR's merge commit must be in `origin/HEAD`,
+  so a stacked PR merged into some other branch does not count. A PR that was
+  closed without merging is still refused. `--no-forge` disables the lookup.
 - Smart upstream branch detection
 - Force option for override (with warnings)
 - **Automatically deletes associated local branch** (unless `--no-delete-branch` is used)

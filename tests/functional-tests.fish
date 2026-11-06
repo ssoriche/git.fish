@@ -469,13 +469,15 @@ function test_git_wrm_pr_merged --description "Test git-wrm consults gh for squa
     git -C "$main_dir" push origin main >/dev/null 2>&1
 
     # gh stub: logs every invocation and answers with the state in
-    # $stub_dir/state and the PR head SHA in $stub_dir/sha
+    # $stub_dir/state, the PR head SHA in $stub_dir/sha, and the merge
+    # commit in $stub_dir/merge (the squash commit on main)
     set -l stub_dir /tmp/git-fish-wrmpr-bin-(random)
     mkdir -p "$stub_dir"
-    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "%%s\\t42\\t%%s\\n" "$(cat "%s/state")" "$(cat "%s/sha")"\n' \
-        "$stub_dir" "$stub_dir" "$stub_dir" >"$stub_dir/gh"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "%%s\\t42\\t%%s\\t%%s\\n" "$(cat "%s/state")" "$(cat "%s/sha")" "$(cat "%s/merge")"\n' \
+        "$stub_dir" "$stub_dir" "$stub_dir" "$stub_dir" >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
     git -C "$feature_wt" rev-parse HEAD >"$stub_dir/sha"
+    git -C "$main_dir" rev-parse origin/main >"$stub_dir/merge"
     set -l orig_path $PATH
     set -lx PATH $stub_dir $PATH
 
@@ -551,10 +553,28 @@ function test_git_wrm_pr_merged --description "Test git-wrm consults gh for squa
         set failed_tests (math $failed_tests + 1)
     end
 
+    echo "Test 5b: MERGED PR whose merge commit is not in origin/main is refused..."
+    set total_tests (math $total_tests + 1)
+    # A stacked PR merged into another branch reports MERGED; its merge
+    # commit is not in the integration branch, so the work is not there
+    echo MERGED >"$stub_dir/state"
+    git -C "$feature_wt" rev-parse HEAD >"$stub_dir/sha"
+    git -C "$feature_wt" rev-parse HEAD >"$stub_dir/merge"
+    set -l out (git-wrm "$feature_wt" 2>&1)
+    set -l st $status
+    if test $st -eq 3; and test -d "$feature_wt"; and string match -q '*not in origin/main*' "$out"
+        echo "✅ MERGED elsewhere: refused with exit 3 and explanation"
+    else
+        echo "❌ exit=$st, dir exists: "(test -d "$feature_wt"; and echo yes; or echo no)
+        printf '%s\n' $out
+        set failed_tests (math $failed_tests + 1)
+    end
+
     echo "Test 6: MERGED PR covering HEAD removes the worktree and its local branch..."
     set total_tests (math $total_tests + 1)
     echo MERGED >"$stub_dir/state"
     git -C "$feature_wt" rev-parse HEAD >"$stub_dir/sha"
+    git -C "$main_dir" rev-parse origin/main >"$stub_dir/merge"
     set -l out (git-wrm "$feature_wt" 2>&1)
     set -l st $status
     set -l branch_left (git -C "$main_dir" branch --list feature)
@@ -2049,12 +2069,15 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     git -C "$main_dir" remote set-url origin https://github.com/example/repo.git
 
     # gh stub: logs every invocation, answers MERGED with the PR head SHA
-    # (the helper's third field) equal to the worktree HEAD
+    # (the helper's third field) equal to the worktree HEAD and a merge
+    # commit (fourth field) that sits on origin/main, as a real squash or
+    # rebase merge into main would
     set -l stub_dir /tmp/git-fish-prc-bin-(random)
     mkdir -p "$stub_dir"
     set -l pr_head (git -C "$wts_dir/pr" rev-parse HEAD)
-    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\n"\n' \
-        "$stub_dir" $pr_head >"$stub_dir/gh"
+    set -l main_head (git -C "$main_dir" rev-parse origin/main)
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\t%s\\n"\n' \
+        "$stub_dir" $pr_head $main_head >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
     set -l orig_path $PATH
     set -lx PATH $stub_dir $PATH
@@ -2103,8 +2126,8 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     # Reused branch name: gh reports the OLD PR as MERGED, but its head is the
     # initial commit, which does not cover the worktree's HEAD.
     set -l old_head (git -C "$main_dir" rev-parse origin/main)
-    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\n"\n' \
-        "$stub_dir" $old_head >"$stub_dir/gh"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\t%s\\n"\n' \
+        "$stub_dir" $old_head $main_head >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
     set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
     set -l state (string split \t -- $line)[1]
@@ -2118,8 +2141,8 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     echo "Test 5: non-github remote skips gh entirely..."
     set total_tests (math $total_tests + 1)
     git -C "$main_dir" remote set-url origin https://forgejo.example.com/example/repo.git
-    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\n"\n' \
-        "$stub_dir" $pr_head >"$stub_dir/gh"
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\t%s\\n"\n' \
+        "$stub_dir" $pr_head $main_head >"$stub_dir/gh"
     chmod +x "$stub_dir/gh"
     rm -f "$stub_dir/gh-called.log"
     set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
@@ -2144,6 +2167,38 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
         echo "✅ CLOSED PR classifies as pr-closed"
     else
         echo "❌ got '$state', want pr-closed"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 7: MERGED into some other base (merge commit not in origin/main) -> active..."
+    set total_tests (math $total_tests + 1)
+    # A stacked PR merged into its parent branch reports MERGED, but its
+    # merge commit is not in the integration branch: here the PR head itself
+    # stands in for a merge commit that lives elsewhere
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\t%s\\n"\n' \
+        "$stub_dir" $pr_head $pr_head >"$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    rm -f "$stub_dir/gh-called.log"
+    set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
+    set -l state (string split \t -- $line)[1]
+    if test "$state" = active; and test -f "$stub_dir/gh-called.log"
+        echo "✅ MERGED elsewhere is not pr-merged (state='$state')"
+    else
+        echo "❌ got '$state', want active"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 8: MERGED with no merge commit reported -> active..."
+    set total_tests (math $total_tests + 1)
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "MERGED\\t7\\t%s\\t\\n"\n' \
+        "$stub_dir" $pr_head >"$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
+    set -l state (string split \t -- $line)[1]
+    if test "$state" = active
+        echo "✅ unknown merge commit is not pr-merged (state='$state')"
+    else
+        echo "❌ got '$state', want active"
         set failed_tests (math $failed_tests + 1)
     end
 
@@ -2672,12 +2727,14 @@ function test_git_wclean_forge_states --description "Test wclean pr-merged auto-
     set -l pr_head (git -C "$wts_dir/pr-wt" rev-parse HEAD)
 
     # gh stub: answers only for the wcs-pr branch (argument 3 of
-    # 'gh pr view <branch> ...'); every other branch has no PR
+    # 'gh pr view <branch> ...'); every other branch has no PR. The merge
+    # commit (fourth field) is main's tip, as after a real merge into main.
     set -l stub_dir $base/bin
     mkdir -p "$stub_dir"
-    function _wcf_stub --argument-names stub_dir pr_state pr_head
-        printf '#!/bin/sh\ncase "$3" in wcs-pr) printf "%s\\t7\\t%s\\n" ;; *) exit 1 ;; esac\n' \
-            $pr_state $pr_head >"$stub_dir/gh"
+    set -l main_head (git -C "$main_dir" rev-parse origin/main)
+    function _wcf_stub --argument-names stub_dir pr_state pr_head merge_commit
+        printf '#!/bin/sh\ncase "$3" in wcs-pr) printf "%s\\t7\\t%s\\t%s\\n" ;; *) exit 1 ;; esac\n' \
+            $pr_state $pr_head $merge_commit >"$stub_dir/gh"
         chmod +x "$stub_dir/gh"
     end
     set -l orig_path $PATH
@@ -2687,7 +2744,7 @@ function test_git_wclean_forge_states --description "Test wclean pr-merged auto-
 
     echo "Test 1: wlist shows a MERGED PR as pr-merged..."
     set total_tests (math $total_tests + 1)
-    _wcf_stub "$stub_dir" MERGED $pr_head
+    _wcf_stub "$stub_dir" MERGED $pr_head $main_head
     set -l out (git-wlist 2>&1 | string collect)
     if string match -rq '(?m)^pr-wt\s+wcs-pr\s+pr-merged\s+clean\s+\d+d$' -- $out
         echo "✅ wlist row reads pr-merged"
@@ -2713,7 +2770,7 @@ function test_git_wclean_forge_states --description "Test wclean pr-merged auto-
     # Rebuild pr-wt for the CLOSED scenarios: same branch name and PR head,
     # again with no upstream (a sha start point sets no tracking)
     git -C "$main_dir" worktree add "$wts_dir/pr-wt" -b wcs-pr $pr_head >/dev/null 2>&1
-    _wcf_stub "$stub_dir" CLOSED $pr_head
+    _wcf_stub "$stub_dir" CLOSED $pr_head ""
 
     echo "Test 3: pr-closed dry-run shows the unique-commit count..."
     set total_tests (math $total_tests + 1)

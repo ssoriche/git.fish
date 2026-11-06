@@ -11,8 +11,9 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     #     <state> <branch> <upstream> <dirty> <age-days> <path>
     #   state:    protected|detached|merged|pr-merged|pr-closed|gone|stale|active
     #             (first match wins, in that order), or error (see below)
-    #             pr-merged: the branch's GitHub PR is MERGED (squash/rebase
-    #             merges leave HEAD outside the integration branch's history)
+    #             pr-merged: the branch's GitHub PR is MERGED and its merge
+    #             commit is in the integration branch (squash/rebase merges
+    #             leave HEAD itself outside that history)
     #             pr-closed: the PR was CLOSED without merging
     #   branch:   checked-out branch, or '-' for detached HEAD
     #   upstream: configured upstream ref, or '-' if none
@@ -124,6 +125,10 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     # branch"). A reused branch with new commits stays out of both states.
     # MERGED and CLOSED are kept apart: a merged PR's content lives in the
     # integration branch, a closed PR's content lives only in the PR ref.
+    # MERGED alone does not say into WHICH branch (a stacked PR merges into
+    # its parent), so pr-merged also requires the PR's merge commit to be in
+    # the integration branch; a MERGED PR that fails that test falls through
+    # to gone/stale/active, never to pr-closed.
     if test -z "$state"; and not set -q _flag_no_forge; and test -n "$branch"
         set -l remote origin
         if test "$upstream" != -
@@ -138,8 +143,13 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
                 and test -n "$pr_fields[3]"
                 and git -C "$worktree_path" merge-base --is-ancestor \
                     $head_commit $pr_fields[3] 2>/dev/null
-                set state pr-closed
-                test "$pr_fields[1]" = MERGED; and set state pr-merged
+                if test "$pr_fields[1]" = CLOSED
+                    set state pr-closed
+                else if test -n "$integration_branch"; and test -n "$pr_fields[4]"
+                    and git -C "$worktree_path" merge-base --is-ancestor \
+                        $pr_fields[4] $integration_branch 2>/dev/null
+                    set state pr-merged
+                end
             end
         end
     end

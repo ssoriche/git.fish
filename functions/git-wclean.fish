@@ -756,7 +756,13 @@ function _wclean_execute_plan
         if test $verdict = confirm
             set -l reason "upstream gone"
             test $state = pr-closed; and set reason "PR closed"
-            set reason "$reason, "(_wclean_loss_note "$f[11]" "$f[12]" long \
+            # Refresh the loss note: the plan may be minutes old by the time
+            # this prompt is reached, and a stash made or dropped meanwhile
+            # would otherwise be misreported
+            set -l unique (_wclean_unique_commits "$path" "$_wclean_default_branch")
+            set -l stash 0
+            _wclean_has_stash_on "$path" "$branch"; and set stash 1
+            set reason "$reason, "(_wclean_loss_note $unique $stash long \
                 "$_wclean_default_branch")
             read -l -P "Remove '$name' ($reason)? [y/N] " reply
             if not string match -qi y -- "$reply"
@@ -1029,8 +1035,9 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   upstream branch was deleted on the remote ('gone', the usual squash-merge
     #   aftermath) and, for github.com remotes with gh installed, worktrees whose
     #   PR is merged ('pr-merged') or closed ('pr-closed'). pr-merged worktrees
-    #   are removed like merged ones: GitHub vouches that the integration
-    #   branch has the content. gone and pr-closed worktrees are removed only
+    #   are removed like merged ones: GitHub reports the PR merged and its
+    #   merge commit is in the integration branch, so the content is there.
+    #   gone and pr-closed worktrees are removed only
     #   after a per-worktree y/N confirmation that states how many of the
     #   worktree's commits have no equivalent in the integration branch and
     #   whether a stash was made on its branch (--force skips the prompt). The

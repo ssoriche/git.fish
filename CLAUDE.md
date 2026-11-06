@@ -78,9 +78,12 @@ source functions/git-wadd.fish
   local branch is never force-deleted (`_wclean_remove_branch ... safe`)
 - `_git_branch_pr_state`: Single source of truth for the `gh pr view` lookup
   (gh present, github.com remote, cwd handling); prints
-  `<state>\t<number>\t<head-sha>` or nothing. Callers apply the verdict only
-  when `<head-sha>` covers the worktree HEAD (`git merge-base --is-ancestor`),
-  because `gh pr view <branch>` returns the latest PR for a reused branch name.
+  `<state>\t<number>\t<head-sha>\t<merge-sha>` or nothing. Callers apply the
+  verdict only when `<head-sha>` covers the worktree HEAD
+  (`git merge-base --is-ancestor`), because `gh pr view <branch>` returns the
+  latest PR for a reused branch name, and treat MERGED as merged only when
+  `<merge-sha>` is in the integration branch, because a stacked PR merges into
+  its parent, not into main.
   Used by `_git_worktree_status` (pr-merged/pr-closed) and `git-wrm` (accepting
   squash/rebase-merged branches whose PR is MERGED; `--no-forge` skips it)
 - `_git_wclean_config`: Shared config loader for `git-wclean`, `git-wlist`, and

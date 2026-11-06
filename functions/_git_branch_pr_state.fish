@@ -10,7 +10,7 @@ function _git_branch_pr_state --description "Look up a branch's GitHub PR state 
     #
     # OUTPUT
     #   Exactly one tab-separated line on stdout when a PR is found:
-    #     <state> <number> <head-sha>
+    #     <state> <number> <head-sha> <merge-sha>
     #   state:     MERGED|CLOSED|OPEN (as reported by 'gh pr view --json state')
     #   number:    the PR number, or empty if gh did not report one
     #   head-sha:  the PR's head commit (headRefOid). 'gh pr view <branch>'
@@ -20,6 +20,14 @@ function _git_branch_pr_state --description "Look up a branch's GitHub PR state 
     #                git merge-base --is-ancestor <HEAD> <head-sha>
     #              A reused branch name with new commits otherwise inherits an
     #              old PR's MERGED verdict and loses unmerged work.
+    #   merge-sha: the commit the merge produced on the PR's base branch
+    #              (mergeCommit.oid: the squash commit, the merge commit, or
+    #              the last rebased commit), or empty when GitHub reports
+    #              none. MERGED says nothing about WHICH branch received the
+    #              work (a stacked PR merges into its parent), so callers must
+    #              treat a PR as merged only when this commit is in the
+    #              integration branch:
+    #                git merge-base --is-ancestor <merge-sha> <integration>
     #
     #   Prints nothing and returns 1 when the lookup does not apply or fails:
     #   gh is not installed, <remote> (default 'origin') is not a github.com
@@ -30,7 +38,7 @@ function _git_branch_pr_state --description "Look up a branch's GitHub PR state 
     #   set -l pr (_git_branch_pr_state ~/src/repo/feature-x feature-x origin)
     #   if test -n "$pr"
     #       set -l pr_fields (string split \t -- $pr)
-    #       # $pr_fields[1] = state, [2] = number, [3] = head sha
+    #       # $pr_fields[1] = state, [2] = number, [3] = head sha, [4] = merge sha
     #   end
     #
     # NOTES
@@ -59,8 +67,8 @@ function _git_branch_pr_state --description "Look up a branch's GitHub PR state 
 
     pushd "$worktree_path" >/dev/null 2>&1
     or return 1
-    set -l pr (gh pr view $branch --json state,number,headRefOid \
-        --jq '"\(.state)\t\(.number)\t\(.headRefOid)"' 2>/dev/null)
+    set -l pr (gh pr view $branch --json state,number,headRefOid,mergeCommit \
+        --jq '"\(.state)\t\(.number)\t\(.headRefOid)\t\(.mergeCommit.oid // "")"' 2>/dev/null)
     set -l gh_status $status
     popd >/dev/null
 
