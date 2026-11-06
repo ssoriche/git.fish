@@ -21,10 +21,11 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   3. Fetch the latest changes from the remote
     #   4. Check if the current HEAD commit is merged into the integration branch
     #   5. If it is not, and the remote is on github.com with 'gh' installed, ask
-    #      the forge: a branch whose pull request is MERGED counts as merged even
-    #      though squash/rebase merges leave its commits outside origin/HEAD
-    #      (the same rule 'git wlist' uses for its pr-closed state). A CLOSED
-    #      (unmerged) PR is still refused.
+    #      the forge: a branch whose pull request is MERGED, with a merge commit
+    #      that is in origin/HEAD, counts as merged even though squash/rebase
+    #      merges leave its own commits outside that history (the same rule
+    #      'git wlist' uses for its pr-merged state). A CLOSED (unmerged) PR,
+    #      or one merged into some other branch, is still refused.
     #   6. Remove the worktree only if the commit has been merged
     #
     # OPTIONS
@@ -270,7 +271,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     # means the work was abandoned, and removing it would lose that work.
     # 'gh pr view <branch>' reports the most recent PR for a reused branch
     # NAME, so the PR's head commit must also cover this HEAD (HEAD is it, or
-    # an ancestor of it); otherwise the verdict belongs to older work.
+    # an ancestor of it); otherwise the verdict belongs to older work. And
+    # MERGED does not say into WHICH branch (a stacked PR merges into its
+    # parent), so the PR's merge commit must be in the integration branch.
     set -l pr_closed_unmerged false
     if test $commit_found = false; and not set -q _flag_no_forge
         and test -n "$current_branch_name"; and test "$current_branch_name" != HEAD
@@ -281,22 +284,32 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             set -l pr_head $pr_fields[3]
             set -l pr_label PR
             test -n "$pr_fields[2]"; and set pr_label "PR #$pr_fields[2]"
+            set -l pr_merge $pr_fields[4]
             set -l pr_covers_head false
             if test -n "$pr_head"
                 and git merge-base --is-ancestor $head_commit $pr_head 2>/dev/null
                 set pr_covers_head true
             end
+            set -l pr_integrated false
+            if test -n "$pr_merge"
+                and git merge-base --is-ancestor $pr_merge $upstream_branch 2>/dev/null
+                set pr_integrated true
+            end
             switch $pr_state
                 case MERGED
-                    if test $pr_covers_head = true
+                    if test $pr_covers_head = false
+                        printf "  ✗ %s for branch '%s' is merged on GitHub, but its head (%s) does not cover\n" \
+                            $pr_label $current_branch_name (string sub -l 8 -- "$pr_head")
+                        printf "    this HEAD. Was the branch name reused for new work?\n"
+                    else if test $pr_integrated = false
+                        printf "  ✗ %s for branch '%s' is merged on GitHub, but its merge commit (%s) is\n" \
+                            $pr_label $current_branch_name (string sub -l 8 -- "$pr_merge")
+                        printf "    not in %s. Was it merged into another branch?\n" $upstream_branch
+                    else
                         set commit_found true
                         set merged_how "$pr_label merged on GitHub"
                         printf "  ✓ %s for branch '%s' is merged on GitHub (squash/rebase merge).\n" \
                             $pr_label $current_branch_name
-                    else
-                        printf "  ✗ %s for branch '%s' is merged on GitHub, but its head (%s) does not cover\n" \
-                            $pr_label $current_branch_name (string sub -l 8 -- "$pr_head")
-                        printf "    this HEAD. Was the branch name reused for new work?\n"
                     end
                 case CLOSED
                     set pr_closed_unmerged true
