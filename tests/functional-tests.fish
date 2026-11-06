@@ -2059,12 +2059,12 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
     set -l orig_path $PATH
     set -lx PATH $stub_dir $PATH
 
-    echo "Test 1: gh says MERGED -> pr-closed..."
+    echo "Test 1: gh says MERGED -> pr-merged..."
     set total_tests (math $total_tests + 1)
     set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
     set -l state (string split \t -- $line)[1]
-    if test "$state" = pr-closed; and test -f "$stub_dir/gh-called.log"
-        echo "✅ pr-closed via gh stub"
+    if test "$state" = pr-merged; and test -f "$stub_dir/gh-called.log"
+        echo "✅ pr-merged via gh stub"
     else
         echo "❌ got '$state' (stub log exists: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)")"
         set failed_tests (math $failed_tests + 1)
@@ -2128,6 +2128,22 @@ function test_git_worktree_status_pr_closed --description "Test pr-closed detect
         echo "✅ non-github remote never calls gh (state='$state')"
     else
         echo "❌ state='$state', gh invoked: "(test -f "$stub_dir/gh-called.log"; and echo yes; or echo no)
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 6: gh says CLOSED (head covers HEAD) -> pr-closed, not pr-merged..."
+    set total_tests (math $total_tests + 1)
+    git -C "$main_dir" remote set-url origin https://github.com/example/repo.git
+    printf '#!/bin/sh\necho "$@" >> "%s/gh-called.log"\nprintf "CLOSED\\t7\\t%s\\n"\n' \
+        "$stub_dir" $pr_head >"$stub_dir/gh"
+    chmod +x "$stub_dir/gh"
+    rm -f "$stub_dir/gh-called.log"
+    set -l line (_git_worktree_status "$wts_dir/pr" origin/main 30)
+    set -l state (string split \t -- $line)[1]
+    if test "$state" = pr-closed; and test -f "$stub_dir/gh-called.log"
+        echo "✅ CLOSED PR classifies as pr-closed"
+    else
+        echo "❌ got '$state', want pr-closed"
         set failed_tests (math $failed_tests + 1)
     end
 
@@ -2394,7 +2410,8 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     # The plan row proves --prune ran (gone needs the pruned tracking ref);
     # the declined result line proves the 'n' was honored
     if test -d "$wts_dir/gone-wt"
-        and string match -rq '(?m)^gone-wt\s+wcs-gone\s+gone\s+\d+d\s+remove after confirm$' -- $out
+        and string match -rq \
+            '(?m)^gone-wt\s+wcs-gone\s+gone\s+\d+d\s+remove after confirm, 1 unique$' -- $out
         and string match -q '*- gone-wt kept (declined)*' -- $out
         echo "✅ plan row shown (proves --prune ran), 'n' kept the worktree"
     else
@@ -2415,9 +2432,11 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     echo "Test 2b: summary reports a per-category breakdown..."
     set total_tests (math $total_tests + 1)
     if string match -q '*Removed 1 of 1: 1 gone*' -- $out
-        # a gone branch is not an ancestor of main, so git needs the force delete
-        and string match -q '*✓ gone-wt removed, branch wcs-gone force-deleted*' -- $out
-        echo "✅ result line and summary include '1 gone'"
+        # a gone branch is not an ancestor of main: nothing proves its commits
+        # survive anywhere else, so wclean must never fall back to branch -D
+        and string match -q '*✓ gone-wt removed, branch wcs-gone kept (unmerged)*' -- $out
+        and git -C "$main_dir" rev-parse --verify refs/heads/wcs-gone >/dev/null 2>&1
+        echo "✅ result line and summary include '1 gone'; unmerged branch kept"
     else
         echo "❌ summary breakdown missing: $out"
         set failed_tests (math $failed_tests + 1)
@@ -2435,9 +2454,10 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     cd "$main_dir"
     set -l out (git-wclean --dry-run "$wts_dir" 2>&1 | string collect)
     if test -d "$wts_dir/gone-wt"
-        and string match -rq '(?m)^gone-wt\s+wcs-gone2\s+gone\s+\d+d\s+remove after confirm$' -- $out
+        and string match -rq \
+            '(?m)^gone-wt\s+wcs-gone2\s+gone\s+\d+d\s+remove after confirm, 1 unique$' -- $out
         and string match -q '*Would remove 1 of 1: 1 gone (confirm each)*' -- $out
-        echo "✅ dry-run reports 'remove after confirm' without removing"
+        echo "✅ dry-run reports 'remove after confirm, 1 unique' without removing"
     else
         echo "❌ dry-run wrong: $out"
         set failed_tests (math $failed_tests + 1)
@@ -2591,6 +2611,189 @@ function test_git_wclean_states --description "Test wclean gone-confirm, dirty b
     set -e _wclean_config_stale_days
 
     echo "📊 wclean state results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
+function test_git_wclean_forge_states --description "Test wclean pr-merged auto-remove, pr-closed confirm, loss notes, and wlist"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wclean forge-aware states and loss notes..."
+
+    set -p fish_function_path $test_functions_dir
+    source $test_functions_dir/git-wclean.fish
+    source $test_functions_dir/git-wlist.fish
+
+    set -l fake_home /tmp/git-fish-wcf-home-(random)
+    mkdir -p "$fake_home"
+    set -l orig_home $HOME
+    set -lx HOME $fake_home
+
+    # The forge lookup is gated on the origin URL containing 'github.com'.
+    # A LOCAL bare remote whose path contains that string passes the gate
+    # while wclean's fetch still works offline.
+    set -l base /tmp/git-fish-wcf-(random)
+    set -l remote_dir $base/github.com/remote.git
+    set -l main_dir $base/main
+    set -l wts_dir $base/wts
+    rm -rf "$base"
+    mkdir -p "$base/github.com" "$wts_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    git -C "$main_dir" config fetch.prune false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+
+    # pr-wt: two unmerged commits, pushed but with NO upstream configured.
+    # 'git branch -d' judges "merged" against the upstream when one is set,
+    # and a fully pushed branch would then delete cleanly; without one it
+    # judges against HEAD (main), which is the force-vs-keep path under test.
+    git -C "$main_dir" worktree add "$wts_dir/pr-wt" -b wcs-pr >/dev/null 2>&1
+    for n in 1 2
+        echo $n >"$wts_dir/pr-wt/p$n.txt"
+        git -C "$wts_dir/pr-wt" add p$n.txt
+        git -C "$wts_dir/pr-wt" commit -m "pr work $n" >/dev/null 2>&1
+    end
+    git -C "$wts_dir/pr-wt" push origin wcs-pr >/dev/null 2>&1
+    set -l pr_head (git -C "$wts_dir/pr-wt" rev-parse HEAD)
+
+    # gh stub: answers only for the wcs-pr branch (argument 3 of
+    # 'gh pr view <branch> ...'); every other branch has no PR
+    set -l stub_dir $base/bin
+    mkdir -p "$stub_dir"
+    function _wcf_stub --argument-names stub_dir pr_state pr_head
+        printf '#!/bin/sh\ncase "$3" in wcs-pr) printf "%s\\t7\\t%s\\n" ;; *) exit 1 ;; esac\n' \
+            $pr_state $pr_head >"$stub_dir/gh"
+        chmod +x "$stub_dir/gh"
+    end
+    set -l orig_path $PATH
+    set -lx PATH $stub_dir $PATH
+    set -l orig_dir (pwd)
+    cd "$main_dir"
+
+    echo "Test 1: wlist shows a MERGED PR as pr-merged..."
+    set total_tests (math $total_tests + 1)
+    _wcf_stub "$stub_dir" MERGED $pr_head
+    set -l out (git-wlist 2>&1 | string collect)
+    if string match -rq '(?m)^pr-wt\s+wcs-pr\s+pr-merged\s+clean\s+\d+d$' -- $out
+        echo "✅ wlist row reads pr-merged"
+    else
+        echo "❌ wlist output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 2: pr-merged is removed without a prompt and may force-delete its branch..."
+    set total_tests (math $total_tests + 1)
+    set -l out (git-wclean "$wts_dir" </dev/null 2>&1 | string collect)
+    if not test -d "$wts_dir/pr-wt"
+        and string match -rq \
+            '(?m)^pr-wt\s+wcs-pr\s+pr-merged\s+\d+d\s+remove, delete branch$' -- $out
+        and string match -q '*✓ pr-wt removed, branch wcs-pr force-deleted*' -- $out
+        and string match -q '*Removed 1 of 1: 1 pr-merged.*' -- $out
+        echo "✅ pr-merged auto-removed, branch force-deleted, summary counts it"
+    else
+        echo "❌ worktree exists: "(test -d "$wts_dir/pr-wt"; and echo yes; or echo no)", output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Rebuild pr-wt for the CLOSED scenarios: same branch name and PR head,
+    # again with no upstream (a sha start point sets no tracking)
+    git -C "$main_dir" worktree add "$wts_dir/pr-wt" -b wcs-pr $pr_head >/dev/null 2>&1
+    _wcf_stub "$stub_dir" CLOSED $pr_head
+
+    echo "Test 3: pr-closed dry-run shows the unique-commit count..."
+    set total_tests (math $total_tests + 1)
+    set -l out (git-wclean --dry-run "$wts_dir" 2>&1 | string collect)
+    if test -d "$wts_dir/pr-wt"
+        and string match -rq \
+            '(?m)^pr-wt\s+wcs-pr\s+pr-closed\s+\d+d\s+remove after confirm, 2 unique$' -- $out
+        and string match -q '*Would remove 1 of 1: 1 pr-closed (confirm each)*' -- $out
+        echo "✅ dry-run row carries '2 unique'"
+    else
+        echo "❌ dry-run output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 4: pr-closed + y removes the worktree but keeps the unmerged branch..."
+    set total_tests (math $total_tests + 1)
+    set -l out (echo y | git-wclean "$wts_dir" 2>&1 | string collect)
+    if not test -d "$wts_dir/pr-wt"
+        and string match -q '*✓ pr-wt removed, branch wcs-pr kept (unmerged)*' -- $out
+        and string match -q '*Removed 1 of 1: 1 pr-closed.*' -- $out
+        and git -C "$main_dir" rev-parse --verify refs/heads/wcs-pr >/dev/null 2>&1
+        echo "✅ pr-closed removed on y; branch survives"
+    else
+        echo "❌ worktree exists: "(test -d "$wts_dir/pr-wt"; and echo yes; or echo no)", branch exists: "(git -C "$main_dir" rev-parse --verify refs/heads/wcs-pr >/dev/null 2>&1; and echo yes; or echo no)", output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    echo "Test 5: gone rows note a matching stash and a patch-equivalent (0 unique) tip..."
+    set total_tests (math $total_tests + 1)
+    # stash-wt: one unique commit plus a 'WIP on wcs-stash' stash entry
+    git -C "$main_dir" worktree add "$wts_dir/stash-wt" -b wcs-stash >/dev/null 2>&1
+    echo s >"$wts_dir/stash-wt/s.txt"
+    git -C "$wts_dir/stash-wt" add s.txt
+    git -C "$wts_dir/stash-wt" commit -m "stash work" >/dev/null 2>&1
+    git -C "$wts_dir/stash-wt" push -u origin wcs-stash >/dev/null 2>&1
+    echo wip >>"$wts_dir/stash-wt/s.txt"
+    git -C "$wts_dir/stash-wt" stash >/dev/null 2>&1
+    # squash-wt: its one commit was cherry-picked into main, so the tip is
+    # patch-equivalent to main even though it is not an ancestor. main must
+    # advance first: cherry-picking onto the same parent within the same
+    # second would reproduce the identical commit id and make it merged.
+    git -C "$main_dir" worktree add "$wts_dir/squash-wt" -b wcs-squash >/dev/null 2>&1
+    echo q >"$wts_dir/squash-wt/q.txt"
+    git -C "$wts_dir/squash-wt" add q.txt
+    git -C "$wts_dir/squash-wt" commit -m "squash work" >/dev/null 2>&1
+    git -C "$wts_dir/squash-wt" push -u origin wcs-squash >/dev/null 2>&1
+    echo m >"$main_dir/m.txt"
+    git -C "$main_dir" add m.txt
+    git -C "$main_dir" commit -m "main moves on" >/dev/null 2>&1
+    git -C "$main_dir" cherry-pick (git -C "$wts_dir/squash-wt" rev-parse HEAD) >/dev/null 2>&1
+    git -C "$main_dir" push origin main >/dev/null 2>&1
+    # delete both branches in the bare remote so wclean's fetch --prune
+    # produces the gone state
+    git -C "$remote_dir" branch -D wcs-stash wcs-squash >/dev/null 2>&1
+    set -l out (git-wclean --dry-run "$wts_dir" 2>&1 | string collect)
+    if string match -rq \
+            '(?m)^stash-wt\s+wcs-stash\s+gone\s+\d+d\s+remove after confirm, 1 unique, stash present$' -- $out
+        and string match -rq \
+            '(?m)^squash-wt\s+wcs-squash\s+gone\s+\d+d\s+remove after confirm, 0 unique$' -- $out
+        echo "✅ stash and patch-equivalence both surface in the ACTION column"
+    else
+        echo "❌ dry-run output: $out"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Cleanup
+    set -lx PATH $orig_path
+    set -lx HOME $orig_home
+    cd "$orig_dir"
+    functions -e _wcf_stub
+    git -C "$main_dir" worktree prune >/dev/null 2>&1
+    rm -rf "$base" "$fake_home"
+    set -e _wclean_config_protected_branches
+    set -e _wclean_config_default_upstream
+    set -e _wclean_config_system_dirs
+    set -e _wclean_config_max_path_length
+    set -e _wclean_config_fetch_timeout
+    set -e _wclean_config_stale_days
+
+    echo "📊 wclean forge-state results: $failed_tests/$total_tests failed"
     return $failed_tests
 end
 
@@ -3809,6 +4012,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wclean_states
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wclean_forge_states
     set total_failed (math $total_failed + $status)
 
     echo ""

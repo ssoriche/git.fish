@@ -9,8 +9,11 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     # OUTPUT
     #   Exactly one tab-separated line on stdout:
     #     <state> <branch> <upstream> <dirty> <age-days> <path>
-    #   state:    protected|detached|merged|pr-closed|gone|stale|active
+    #   state:    protected|detached|merged|pr-merged|pr-closed|gone|stale|active
     #             (first match wins, in that order), or error (see below)
+    #             pr-merged: the branch's GitHub PR is MERGED (squash/rebase
+    #             merges leave HEAD outside the integration branch's history)
+    #             pr-closed: the PR was CLOSED without merging
     #   branch:   checked-out branch, or '-' for detached HEAD
     #   upstream: configured upstream ref, or '-' if none
     #   dirty:    clean|dirty (any uncommitted changes, untracked included);
@@ -26,7 +29,7 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     #   # Classify one worktree against origin/main with a 30-day stale window
     #   _git_worktree_status ~/src/repo/feature-x origin/main 30 main master
     #
-    #   # Hook-safe classification: never invoke gh (no pr-closed state)
+    #   # Hook-safe classification: never invoke gh (no pr-merged/pr-closed)
     #   _git_worktree_status --no-forge ~/src/repo/feature-x origin/main 30
     #
     # NOTES
@@ -112,13 +115,15 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
         end
     end
 
-    # pr-closed: the branch's GitHub PR is merged or closed. The lookup itself
-    # (gh present, github.com remote, cwd handling) lives in
+    # pr-merged / pr-closed: what the branch's GitHub PR says. The lookup
+    # itself (gh present, github.com remote, cwd handling) lives in
     # _git_branch_pr_state so git-wrm applies the identical rules.
     # 'gh pr view <branch>' reports the most recent PR for a reused branch
     # NAME, so the verdict counts only when that PR's head commit covers this
     # HEAD (HEAD is it, or an ancestor of it, e.g. after GitHub's "update
-    # branch"). A reused branch with new commits stays out of pr-closed.
+    # branch"). A reused branch with new commits stays out of both states.
+    # MERGED and CLOSED are kept apart: a merged PR's content lives in the
+    # integration branch, a closed PR's content lives only in the PR ref.
     if test -z "$state"; and not set -q _flag_no_forge; and test -n "$branch"
         set -l remote origin
         if test "$upstream" != -
@@ -134,6 +139,7 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
                 and git -C "$worktree_path" merge-base --is-ancestor \
                     $head_commit $pr_fields[3] 2>/dev/null
                 set state pr-closed
+                test "$pr_fields[1]" = MERGED; and set state pr-merged
             end
         end
     end

@@ -11,7 +11,10 @@ function git-wlist --description "List git worktrees with lifecycle state"
     #   dirty flag, and age in days since the last commit. States:
     #
     #     merged      HEAD is contained in the integration branch (origin/HEAD)
-    #     pr-closed   The branch's GitHub PR is merged or closed (needs gh)
+    #     pr-merged   The branch's GitHub PR is merged (needs gh); the usual
+    #                 squash- or rebase-merge aftermath
+    #     pr-closed   The branch's GitHub PR was closed without merging
+    #                 (needs gh)
     #     gone        The branch's upstream was deleted on the remote
     #     stale       No commits within the staleness window (default 30 days)
     #     error       The worktree could not be classified
@@ -41,7 +44,8 @@ function git-wlist --description "List git worktrees with lifecycle state"
     #   git wlist --stale-days 7
     #
     # DEPENDENCIES
-    #   - gh (optional): enables pr-closed detection for github.com remotes
+    #   - gh (optional): enables pr-merged / pr-closed detection for github.com
+    #     remotes
     #
     # EXIT STATUS
     #   0    Success
@@ -152,14 +156,14 @@ function git-wlist --description "List git worktrees with lifecycle state"
     end
 
     # Classify each worktree; build sortable rows
-    set -l state_order merged pr-closed gone stale error detached active protected
+    set -l state_order merged pr-merged pr-closed gone stale error detached active protected
     set -l rows
     for i in (seq (count $wt_paths))
         set -l line (_git_worktree_status $wt_paths[$i] "$integration_branch" \
             $stale_days $_wclean_config_protected_branches)
         set -l f (string split \t -- $line)
         set -l order (contains -i -- $f[1] $state_order)
-        or set order 9
+        or set order 10
         set -l name (basename $f[6])
         if test -n "$wt_notes[$i]"
             set name "$name [$wt_notes[$i]]"

@@ -455,9 +455,16 @@ end
 # Delete a local branch from the main repository. Prints a short phrase for
 # the caller's result line ("branch X deleted", "branch X not found", ...)
 # and returns 0 unless the deletion was attempted and failed.
+#   mode  force — fall back to 'branch -D' when '-d' refuses (the commits are
+#                 known to live in the integration branch: merged, pr-merged)
+#         safe  — never force; an unmerged branch is kept and reported, since
+#                 nothing proves its commits survive anywhere else (gone,
+#                 pr-closed). This is the default.
 function _wclean_remove_branch
     set -l main_repo $argv[1]
     set -l branch_name $argv[2]
+    set -l mode $argv[3]
+    test -n "$mode"; or set mode safe
 
     if test -z "$branch_name"
         printf "no branch to delete"
@@ -472,6 +479,10 @@ function _wclean_remove_branch
         printf "branch %s deleted" $branch_name
         return 0
     end
+    if test $mode != force
+        printf "branch %s kept (unmerged)" $branch_name
+        return 0
+    end
     if git -C "$main_repo" branch -D "$branch_name" >/dev/null 2>&1
         printf "branch %s force-deleted" $branch_name
         return 0
@@ -480,14 +491,76 @@ function _wclean_remove_branch
     return 1
 end
 
+# What a confirm-row removal could lose, for the prompt and the plan table.
+# Count the worktree's commits that have no patch-equivalent in the
+# integration branch ('+' lines of git cherry): a squash- or rebase-merged
+# branch counts 0 even though ancestry says unmerged. Prints '?' when the
+# count is unavailable (no integration branch, git cherry failed).
+function _wclean_unique_commits
+    set -l worktree_path $argv[1]
+    set -l integration_branch $argv[2]
+
+    if test -z "$integration_branch"
+        printf '?'
+        return 1
+    end
+    set -l lines (git -C "$worktree_path" cherry $integration_branch HEAD 2>/dev/null)
+    if test $status -ne 0
+        printf '?'
+        return 1
+    end
+    # printf keeps 'string match' off stdin when there are no lines
+    printf '%d' (printf '%s\n' $lines | string match -r '^\+' | count)
+end
+
+# Does the repository hold a stash made on this branch? 'git stash list' is
+# shared by every worktree of a repository, so match on the reflog subject
+# ('WIP on <branch>: ...' or 'On <branch>: ...'). A stash is invisible to
+# 'git status --porcelain', so a clean worktree can still carry one.
+function _wclean_has_stash_on
+    set -l worktree_path $argv[1]
+    set -l branch $argv[2]
+
+    test -n "$branch"; or return 1
+    set -l subjects (git -C "$worktree_path" stash list --format=%gs 2>/dev/null)
+    set -l pattern '^(WIP on|On) '(string escape --style=regex -- $branch)':'
+    printf '%s\n' $subjects | string match -rq -- $pattern
+end
+
+# Render the loss note from a confirm row's unique-commit count and stash
+# flag. 'short' is the plan table's ACTION suffix ("2 unique, stash present");
+# 'long' is the prompt's parenthetical ("2 commits not in origin/main, stash
+# present").
+function _wclean_loss_note
+    set -l unique $argv[1]
+    set -l stash $argv[2]
+    set -l style $argv[3]
+    set -l integration_branch $argv[4]
+
+    set -l note
+    if test "$style" = long
+        set note "$unique commits not in $integration_branch"
+        test "$unique" = 1; and set note "1 commit not in $integration_branch"
+        test "$unique" = '?'; and set note "unknown commits not in $integration_branch"
+    else
+        set note "$unique unique"
+    end
+    test "$stash" = 1; and set note "$note, stash present"
+    printf '%s' $note
+end
+
 # Plan one worktree: classify it with the shared classifier and append a
 # tab-separated row to _wclean_plan_rows describing what wclean will do.
 # Row fields: order, age_key, verdict, state, age, name, branch, text, path,
-# planned_head.
+# planned_head, unique, stash.
 #   verdict  remove  — removed without asking
 #            confirm — removed after a y/N prompt (--force skips it)
 #            keep    — never removed; text is the reason
 #   text     the ACTION (remove/confirm) or REASON (keep) column
+#   unique   confirm rows only: commits with no patch-equivalent in the
+#            integration branch, or '?'; empty otherwise
+#   stash    confirm rows only: 1 when a stash was made on the branch, else 0;
+#            empty otherwise
 function _wclean_plan_worktree
     set -l worktree_path $argv[1]
 
@@ -533,8 +606,10 @@ function _wclean_plan_worktree
 
     set -l verdict keep
     set -l text
+    set -l unique ""
+    set -l stash ""
     switch $state
-        case merged
+        case merged pr-merged
             if test "$dirty" = dirty
                 set text "uncommitted changes"
             else
@@ -548,8 +623,13 @@ function _wclean_plan_worktree
                 set verdict remove
                 set text $remove_action
             else
+                # Only confirm rows pay for the loss note: one git cherry and
+                # one stash list each. --force and --check never get here.
                 set verdict confirm
-                set text "remove after confirm"
+                set unique (_wclean_unique_commits "$worktree_path" "$_wclean_default_branch")
+                set stash 0
+                _wclean_has_stash_on "$worktree_path" "$branch"; and set stash 1
+                set text "remove after confirm, "(_wclean_loss_note $unique $stash short)
             end
         case stale
             set text "stale, review manually"
@@ -564,9 +644,9 @@ function _wclean_plan_worktree
     end
 
     # Sort keys: wlist's state order, then oldest first; error rows carry '-'
-    set -l state_order merged pr-closed gone stale error detached active protected
+    set -l state_order merged pr-merged pr-closed gone stale error detached active protected
     set -l order (contains -i -- $state $state_order)
-    or set order 9
+    or set order 10
     set -l age_key $age
     set -l age_disp "$age"d
     if test "$age" = -
@@ -577,9 +657,9 @@ function _wclean_plan_worktree
     # The HEAD the verdict was based on; the executor re-verifies it before
     # acting, since earlier prompts can leave this plan minutes old
     set -l planned_head (git -C "$worktree_path" rev-parse HEAD 2>/dev/null)
-    set -ga _wclean_plan_rows (printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    set -ga _wclean_plan_rows (printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         $order $age_key $verdict $state $age_disp $name $branch $text $worktree_path \
-        "$planned_head")
+        "$planned_head" "$unique" "$stash")
     return 0
 end
 
@@ -656,9 +736,9 @@ end
 
 # Execute the plan: one result line per planned removal, prompting inline for
 # confirm rows. Outcomes accumulate in _wclean_exec_counts as
-# merged gone pr-closed declined failed changed.
+# merged gone pr-closed declined failed changed pr-merged.
 function _wclean_execute_plan
-    set -g _wclean_exec_counts 0 0 0 0 0 0
+    set -g _wclean_exec_counts 0 0 0 0 0 0 0
     set -l rows (_wclean_plan_rows_for remove confirm)
     test (count $rows) -gt 0; or return 0
 
@@ -675,7 +755,9 @@ function _wclean_execute_plan
 
         if test $verdict = confirm
             set -l reason "upstream gone"
-            test $state = pr-closed; and set reason "PR merged/closed"
+            test $state = pr-closed; and set reason "PR closed"
+            set reason "$reason, "(_wclean_loss_note "$f[11]" "$f[12]" long \
+                "$_wclean_default_branch")
             read -l -P "Remove '$name' ($reason)? [y/N] " reply
             if not string match -qi y -- "$reply"
                 printf "%s kept (declined)\n" "- $name"
@@ -713,7 +795,12 @@ function _wclean_execute_plan
             if set -q _wclean_flag_no_delete_branch
                 set detail "removed, branch $branch kept"
             else
-                set detail "removed, "(_wclean_remove_branch "$_wclean_main_repo" "$branch")
+                # Force-delete only when the integration branch provably has
+                # the commits (ancestry, or GitHub reports the PR merged)
+                set -l del_mode safe
+                contains -- $state merged pr-merged; and set del_mode force
+                set detail "removed, "(_wclean_remove_branch "$_wclean_main_repo" "$branch" \
+                    $del_mode)
             end
         end
         printf "✓ %s %s\n" $name $detail
@@ -725,6 +812,8 @@ function _wclean_execute_plan
                 set _wclean_exec_counts[2] (math $_wclean_exec_counts[2] + 1)
             case pr-closed
                 set _wclean_exec_counts[3] (math $_wclean_exec_counts[3] + 1)
+            case pr-merged
+                set _wclean_exec_counts[7] (math $_wclean_exec_counts[7] + 1)
         end
     end
 end
@@ -749,6 +838,7 @@ function _wclean_show_summary
 
     # Planned removals by state
     set -l n_merged 0
+    set -l n_pr_merged 0
     set -l n_gone 0
     set -l n_pr 0
     set -l n_confirm 0
@@ -758,6 +848,8 @@ function _wclean_show_summary
         switch $f[4]
             case merged
                 set n_merged (math $n_merged + 1)
+            case pr-merged
+                set n_pr_merged (math $n_pr_merged + 1)
             case gone
                 set n_gone (math $n_gone + 1)
             case pr-closed
@@ -796,8 +888,8 @@ function _wclean_show_summary
     set -l n_changed 0
     if set -q _wclean_flag_dry_run
         if test $planned -gt 0
-            set -l breakdown (_wclean_breakdown "$n_merged merged" "$n_gone gone" \
-                "$n_pr pr-closed")
+            set -l breakdown (_wclean_breakdown "$n_merged merged" "$n_pr_merged pr-merged" \
+                "$n_gone gone" "$n_pr pr-closed")
             test $n_confirm -gt 0; and set breakdown "$breakdown (confirm each)"
             printf "Would remove %d of %d: %s.\n" $planned $total $breakdown
         else
@@ -805,13 +897,14 @@ function _wclean_show_summary
         end
     else
         set -l c $_wclean_exec_counts
-        set -q c[6]; or set c 0 0 0 0 0 0
+        set -q c[7]; or set c 0 0 0 0 0 0 0
         set n_declined $c[4]
         set n_failed $c[5]
         set n_changed $c[6]
-        set -l removed (math $c[1] + $c[2] + $c[3])
+        set -l removed (math $c[1] + $c[2] + $c[3] + $c[7])
         if test $planned -gt 0
-            set -l breakdown (_wclean_breakdown "$c[1] merged" "$c[2] gone" "$c[3] pr-closed")
+            set -l breakdown (_wclean_breakdown "$c[1] merged" "$c[7] pr-merged" "$c[2] gone" \
+                "$c[3] pr-closed")
             test -n "$breakdown"; and set breakdown ": $breakdown"
             printf "Removed %d of %d%s.\n" $removed $planned "$breakdown"
         else
@@ -830,9 +923,10 @@ end
 
 # --check mode: at most one line on stdout, only when something is reapable.
 # Every runtime failure is silent success — a prompt hook must never break
-# the shell. Reapable = state in {merged, gone} AND clean; pr-closed is
-# impossible here because classification always runs --no-forge (a hung gh
-# call must never stall a prompt). Stale is appended only when reapable > 0.
+# the shell. Reapable = state in {merged, gone} AND clean; pr-merged and
+# pr-closed are impossible here because classification always runs
+# --no-forge (a hung gh call must never stall a prompt). Stale is appended
+# only when reapable > 0.
 function _wclean_run_check
     git rev-parse --git-dir >/dev/null 2>&1
     or return 0
@@ -934,8 +1028,15 @@ function git-wclean --description "Clean up git worktrees that have been merged 
     #   Beyond ancestry-merged worktrees, wclean also detects worktrees whose
     #   upstream branch was deleted on the remote ('gone', the usual squash-merge
     #   aftermath) and, for github.com remotes with gh installed, worktrees whose
-    #   PR is merged or closed. Both are removed only after a per-worktree y/N
-    #   confirmation (--force skips the prompt). Worktrees with uncommitted
+    #   PR is merged ('pr-merged') or closed ('pr-closed'). pr-merged worktrees
+    #   are removed like merged ones: GitHub vouches that the integration
+    #   branch has the content. gone and pr-closed worktrees are removed only
+    #   after a per-worktree y/N confirmation that states how many of the
+    #   worktree's commits have no equivalent in the integration branch and
+    #   whether a stash was made on its branch (--force skips the prompt). The
+    #   local branch of a gone or pr-closed worktree is deleted only when git
+    #   agrees it is merged; otherwise it is kept and the result line says so.
+    #   Worktrees with uncommitted
     #   changes are never removed, in any state, even with --force. Worktrees
     #   older than the staleness window are reported for manual review and never
     #   auto-removed.
