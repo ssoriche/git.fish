@@ -70,14 +70,18 @@ source functions/git-wadd.fish
 
 **Shared private helpers**
 - `_git_worktree_status`: Single source of truth for classifying a worktree's
-  lifecycle state (merged/gone/pr-closed/stale/active/detached/protected/error);
-  used by both `git-wlist` and `git-wclean`
+  lifecycle state (merged/pr-merged/pr-closed/gone/stale/active/detached/
+  protected/error); used by both `git-wlist` and `git-wclean`. `pr-merged`
+  (PR MERGED) is auto-removed like `merged`; `pr-closed` (PR CLOSED) and
+  `gone` are confirm rows whose prompt and dry-run ACTION text carry a loss
+  note (`git cherry` unique-commit count, stash made on the branch) and whose
+  local branch is never force-deleted (`_wclean_remove_branch ... safe`)
 - `_git_branch_pr_state`: Single source of truth for the `gh pr view` lookup
   (gh present, github.com remote, cwd handling); prints
   `<state>\t<number>\t<head-sha>` or nothing. Callers apply the verdict only
   when `<head-sha>` covers the worktree HEAD (`git merge-base --is-ancestor`),
   because `gh pr view <branch>` returns the latest PR for a reused branch name.
-  Used by `_git_worktree_status` (pr-closed) and `git-wrm` (accepting
+  Used by `_git_worktree_status` (pr-merged/pr-closed) and `git-wrm` (accepting
   squash/rebase-merged branches whose PR is MERGED; `--no-forge` skips it)
 - `_git_wclean_config`: Shared config loader for `git-wclean`, `git-wlist`, and
   `git wclean --check`

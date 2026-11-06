@@ -98,7 +98,8 @@ On success, prints exactly one tab-separated line to stdout and returns 0:
 | `protected` | Branch is in the protected-branches set (defaults: main, master, develop, trunk — matching the existing `_wclean_config_protected_branches` default — plus wclean config) |
 | `detached`  | Worktree is on a detached HEAD                                                                |
 | `merged`    | HEAD is an ancestor of the integration branch (existing wclean ancestry check, relocated)     |
-| `pr-closed` | The branch's upstream remote (falling back to `origin`) has a github.com URL, `gh` is available/authenticated, and `gh pr view <branch> --json state` — invoked with the worktree as its working directory so `gh` resolves the repo from its remotes — reports `MERGED` or `CLOSED` |
+| `pr-merged` | The branch's upstream remote (falling back to `origin`) has a github.com URL, `gh` is available/authenticated, and `gh pr view <branch> --json state` — invoked with the worktree as its working directory so `gh` resolves the repo from its remotes — reports `MERGED`, and the PR's head commit covers the worktree HEAD |
+| `pr-closed` | Same lookup, but the PR reports `CLOSED` (closed without merging). Kept apart from `pr-merged` because a merged PR's content lives in the integration branch while a closed PR's content lives only in GitHub's `refs/pull/N/head` |
 | `gone`      | Branch has an upstream configured but its remote-tracking ref no longer exists                |
 | `stale`     | HEAD committer date older than `<stale-days>` days (default 30)                               |
 | `active`    | Everything else                                                                               |
@@ -116,17 +117,18 @@ what makes gone-detection possible and needs its own test coverage.
 
 **Network in the classifier:** only the `gh` call, only for github.com
 remotes, only when `gh` is installed and authenticated. Any `gh` failure
-(missing, unauthenticated, rate-limited) silently skips the `pr-closed` check
-for that run; affected worktrees fall through to `gone`/`stale`/`active`.
-`gh` has no client-side timeout mechanism, so the check is gated by a
-classifier flag: `--no-forge` disables the `pr-closed` state entirely.
+(missing, unauthenticated, rate-limited) silently skips the `pr-merged` /
+`pr-closed` check for that run; affected worktrees fall through to
+`gone`/`stale`/`active`. `gh` has no client-side timeout mechanism, so the
+check is gated by a classifier flag: `--no-forge` disables both states
+entirely.
 Interactive commands (`git-wlist`, full `git wclean`) run with forge checks
 on — a slow `gh` there is visible and interruptible. `git wclean --check`
 always passes `--no-forge` (see below), so a hung `gh` can never stall a
 prompt hook. Caveat: `gh pr view <branch>` reports the most recent PR for a
-branch name, so a *reused* branch name whose old PR was merged classifies as
-`pr-closed`; the clean-tree requirement plus the per-worktree confirm prompt
-makes this low-risk.
+branch name, so the verdict is applied only when that PR's head commit covers
+the worktree HEAD; a *reused* branch name with new commits stays out of both
+states.
 
 **Failure behavior:** if the path is not a registered, resolvable worktree or
 a `git -C` command fails mid-classification, the classifier prints
@@ -156,13 +158,14 @@ untouched by a wclean run over that directory, and an *unregistered* stray
 directory is invisible to wlist. Runs one `fetch --prune` (timeout-bounded),
 classifies every worktree, and prints an aligned table.
 
-Sort order: by state, in the fixed order `merged`, `pr-closed`, `gone`,
-`stale`, `error`, `detached`, `active`, `protected`; oldest-first within each
-state. NAME is the basename of the worktree path. An `error`-state worktree
-renders with `-` in the BRANCH/DIRTY/AGE columns.
+Sort order: by state, in the fixed order `merged`, `pr-merged`, `pr-closed`,
+`gone`, `stale`, `error`, `detached`, `active`, `protected`; oldest-first
+within each state. NAME is the basename of the worktree path. An
+`error`-state worktree renders with `-` in the BRANCH/DIRTY/AGE columns.
 
 ```text
 NAME          BRANCH        STATE      DIRTY  AGE
+pr-1400       pr-1400       pr-merged  clean  20d
 pr-1423       pr-1423       pr-closed  clean  12d
 fix-auth      fix-auth      gone       clean  8d
 big-refactor  big-refactor  stale      dirty  45d
@@ -183,7 +186,8 @@ Per-worktree action is now driven by classifier state:
 | State                   | Action                                                                                       |
 | ----------------------- | -------------------------------------------------------------------------------------------- |
 | `merged`                | If clean: removed with no prompt; `--dry-run` lists as "would remove". If dirty: kept and reported — a **deliberate behavior change**: today wclean removes merged worktrees even with uncommitted changes (`git worktree remove --force`, unconditional). Dirty now blocks removal in every state, and `--force` does **not** override the dirty block; both need their own tests. |
-| `pr-closed`, `gone`     | If clean: single `y/N` prompt per worktree — `Remove 'fix-auth' (upstream gone)? [y/N]`, or `(PR merged/closed)` as the parenthetical for `pr-closed`. `--force` skips the prompt; `--dry-run` lists as "would remove (needs confirm)". If dirty: kept and reported. |
+| `pr-merged`             | As `merged`: GitHub vouches that the integration branch has the content, so no prompt. The local branch may be force-deleted (`branch -d`, then `-D`). |
+| `pr-closed`, `gone`     | If clean: single `y/N` prompt per worktree carrying a loss note — `Remove 'fix-auth' (upstream gone, 3 commits not in origin/main, stash present)? [y/N]`, or `(PR closed, ...)` for `pr-closed`. The count is `git cherry <integration> HEAD` `+` lines (0 for a squash-merged branch), the stash note fires when `git stash list` holds a `WIP on <branch>:` / `On <branch>:` entry; both are computed only for confirm rows, never under `--force` or `--check`. The dry-run ACTION column shows the short form: `remove after confirm, 3 unique, stash present`. `--force` skips the prompt. If dirty: kept and reported. The local branch is deleted with `branch -d` only; when git refuses, the branch is kept and the result line reads `branch <name> kept (unmerged)` — nothing proves those commits survive anywhere else. |
 | `stale`                 | Never removed (even with `--force`); listed in a "stale — review manually" summary section    |
 | `protected`, `detached`, `active` | Kept, as today                                                                     |
 
@@ -252,8 +256,8 @@ during the greeting.
 git-wclean: 2 reapable (1 merged, 1 gone), 1 stale — run 'git wclean'
 ```
 
-(Because `--check` always runs `--no-forge`, `pr-closed` can never appear in
-its counts — only `merged` and `gone`.)
+(Because `--check` always runs `--no-forge`, `pr-merged` and `pr-closed` can
+never appear in its counts — only `merged` and `gone`.)
 
 - Silent with exit 0 when nothing is reapable — including when stale
   worktrees exist but reapable count is 0. The stale count is appended only
@@ -269,8 +273,8 @@ its counts — only `merged` and `gone`.)
   stderr (`warning: fetch failed; results may be stale`). `--check` stays
   silent. Gone-detection cannot be inflated by a failed fetch (see safety
   property above).
-- **`gh` unavailable:** `pr-closed` silently skipped; gone-detection carries
-  the load.
+- **`gh` unavailable:** `pr-merged` / `pr-closed` silently skipped;
+  gone-detection carries the load.
 - **Detached / locked / prunable worktrees:** surfaced by wlist, never
   auto-removed.
 - Exit codes follow house style: 0 success, 1 invalid args, 2 git failure

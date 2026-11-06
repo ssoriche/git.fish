@@ -281,7 +281,7 @@ git wrm --no-forge ~/worktrees/feature-branch
 - Recognizes squash- and rebase-merged branches: when the commits are not
   ancestors of `origin/HEAD` but the remote is on github.com and `gh` is
   installed, a branch whose PR is `MERGED` is treated as merged (the same rule
-  behind the `pr-closed` state in `git wlist`). The PR's head commit must cover
+  behind the `pr-merged` state in `git wlist`). The PR's head commit must cover
   the worktree HEAD, so a reused branch name with new commits is not mistaken
   for the old merged PR. A PR that was closed without merging is still refused.
   `--no-forge` disables the lookup.
@@ -304,8 +304,8 @@ git wlist --stale-days 7
 
 **Features:**
 
-- Classifies every worktree as `merged`, `pr-closed`, `gone`, `stale`, `active`,
-  `detached`, `protected`, or `error`
+- Classifies every worktree as `merged`, `pr-merged`, `pr-closed`, `gone`,
+  `stale`, `active`, `detached`, `protected`, or `error`
 - Shows branch, dirty flag, and age in days since the last commit
 - Sorted by state, oldest first within each state
 - Runs a single `git fetch --prune origin` up front, bounded by the fetch
@@ -459,7 +459,7 @@ Optional tools that enhance the experience:
 
 - **awk** (usually pre-installed)
 - **realpath** (for path resolution)
-- **gh** (GitHub CLI) - enables pr-closed detection for github.com remotes
+- **gh** (GitHub CLI) - enables pr-merged / pr-closed detection for github.com remotes
 - **ps** (procps / base system) - lets a timed-out fetch's whole process tree
   be killed; without it the fetch itself is still killed via its recorded pid
 
