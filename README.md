@@ -34,6 +34,19 @@ fisher install ssoriche/git.fish
 
 You can also copy individual function files to `~/.config/fish/functions/` if you only want specific commands.
 
+### Claude Code plugin
+
+This repo is also a Claude Code plugin marketplace. Its `git-fish` skill teaches
+Claude the bare layout and which command does which job, so it uses
+`git wadd`/`wpr`/`wrm`/`wclean` instead of raw `git worktree`.
+
+```fish
+/plugin marketplace add ssoriche/git.fish
+/plugin install git-fish@git-fish
+```
+
+Fisher installs only `functions/` and `conf.d/`; the plugin files are ignored by it.
+
 ## Quick Setup
 
 After installation, you may want to set up the standard git abbreviation:
