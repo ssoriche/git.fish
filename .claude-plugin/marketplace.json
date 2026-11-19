@@ -1,5 +1,6 @@
 {
   "name": "git-fish",
+  "description": "Claude Code plugin for the git.fish bare-layout worktree commands",
   "owner": { "name": "Shawn Sorichetti" },
   "plugins": [
     {
