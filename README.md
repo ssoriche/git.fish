@@ -45,7 +45,7 @@ Claude the bare layout and which command does which job, so it uses
 /plugin install git-fish@git-fish
 ```
 
-Fisher installs only `functions/` and `conf.d/`; the plugin files are ignored by it.
+Fisher only installs `functions/`, `themes/`, `conf.d/`, and `completions/`, so it ignores the plugin files.
 
 ## Quick Setup
 
