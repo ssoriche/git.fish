@@ -102,6 +102,11 @@ source functions/git-wadd.fish
   never reaches fish) kill the fetch tree and remove the scratch files (kept only if the wrapper survives SIGKILL); 130 = interrupted, and
   every caller stops with 130.
 
+**Claude Code plugin** (`.claude-plugin/`, `skills/git-fish/SKILL.md`)
+- The repo is a one-plugin marketplace; fisher ignores these dirs
+- When adding or renaming a public command, update SKILL.md's job table;
+  `test_claude_plugin` fails if a `functions/git-*.fish` command or `cwb` is missing
+
 **Branch management**
 - `git-bclean`: Clean up merged local branches with pattern exclusion support
 
