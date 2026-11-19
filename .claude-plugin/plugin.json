@@ -1,0 +1,8 @@
+{
+  "name": "git-fish",
+  "version": "0.1.0",
+  "description": "Teaches Claude the git.fish bare-layout worktree commands (wclone, wadd, wpr, wlist, wrm, wclean)",
+  "author": { "name": "Shawn Sorichetti" },
+  "repository": "https://github.com/ssoriche/git.fish",
+  "license": "MIT"
+}
