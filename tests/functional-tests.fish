@@ -4150,6 +4150,81 @@ function test_git_fetch_progress_callers --description "Test how wclean, wlist, 
     return $failed_tests
 end
 
+function test_claude_plugin --description "Test the Claude Code plugin skill covers every public command and manifests parse"
+    set -l test_file_dir (dirname (status --current-filename))
+    set -l repo_dir (realpath "$test_file_dir/..")
+    set -l skill "$repo_dir/skills/git-fish/SKILL.md"
+    set -l failed 0
+
+    echo "🔍 Testing Claude Code plugin skill and manifests..."
+
+    if not test -f "$skill"
+        echo "❌ Missing $skill"
+        return 1
+    end
+
+    set -l skill_text (string collect <"$skill")
+
+    # Frontmatter must open the file and carry name + description
+    set -l first_line (head -n 1 "$skill")
+    if test "$first_line" != ---
+        echo "❌ SKILL.md does not start with frontmatter"
+        set failed (math $failed + 1)
+    end
+    for key in name description
+        if not string match -rq "(?m)^$key: \S" -- "$skill_text"
+            echo "❌ SKILL.md frontmatter missing '$key'"
+            set failed (math $failed + 1)
+        end
+    end
+
+    # Every public command must be named: git-<sub> files as `git <sub>`, plus cwb
+    set -l commands cwb
+    for f in $repo_dir/functions/git-*.fish
+        set -a commands (string replace -r '^git-(.*)\.fish$' 'git $1' (basename $f))
+    end
+    for cmd in $commands
+        if string match -q "*$cmd*" -- "$skill_text"
+            echo "✅ SKILL.md mentions '$cmd'"
+        else
+            echo "❌ SKILL.md does not mention '$cmd'"
+            set failed (math $failed + 1)
+        end
+    end
+
+    # Manifests: must exist; validate fields when jq is available
+    set -l plugin_json "$repo_dir/.claude-plugin/plugin.json"
+    set -l market_json "$repo_dir/.claude-plugin/marketplace.json"
+    for f in $plugin_json $market_json
+        if not test -f "$f"
+            echo "❌ Missing $f"
+            set failed (math $failed + 1)
+        end
+    end
+    if command -q jq
+        if jq -e '.name == "git-fish" and (.description | length > 0)' "$plugin_json" >/dev/null 2>&1
+            echo "✅ plugin.json is valid"
+        else
+            echo "❌ plugin.json invalid or missing name/description"
+            set failed (math $failed + 1)
+        end
+        set -l market_filter '.name and .owner.name and (.plugins | length == 1)'
+        set market_filter "$market_filter"' and .plugins[0].name == "git-fish"'
+        set market_filter "$market_filter"' and .plugins[0].source == "./"'
+        if jq -e "$market_filter" "$market_json" >/dev/null 2>&1
+            echo "✅ marketplace.json is valid"
+        else
+            echo "❌ marketplace.json invalid or wrong plugin entry"
+            set failed (math $failed + 1)
+        end
+    else
+        echo "⚠️  jq not found; skipping manifest field checks"
+    end
+
+    echo "📊 Claude plugin check: $failed failed"
+    return $failed
+end
+
 function run_functional_tests --description "Run all functional tests"
     set -l total_failed 0
 
@@ -4312,6 +4387,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_all_commands_help_no_leaked_comments
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_claude_plugin
     set total_failed (math $total_failed + $status)
 
     echo ""
