@@ -1,0 +1,11 @@
+{
+  "name": "git-fish",
+  "owner": { "name": "Shawn Sorichetti" },
+  "plugins": [
+    {
+      "name": "git-fish",
+      "source": "./",
+      "description": "Skill for the git.fish bare-layout worktree commands"
+    }
+  ]
+}
