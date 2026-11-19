@@ -3938,8 +3938,13 @@ function test_git_fetch_progress_callers --description "Test how wclean, wlist, 
 end
 
 function test_claude_plugin --description "Test the Claude Code plugin skill covers every public command and manifests parse"
-    set -l test_file_dir (dirname (status --current-filename))
-    set -l repo_dir (realpath "$test_file_dir/..")
+    set -l repo_dir
+    if test -n "$FISH_FUNCTIONS_DIR"
+        set repo_dir (dirname (realpath "$FISH_FUNCTIONS_DIR"))
+    else
+        set -l test_file_dir (dirname (realpath (status --current-filename)))
+        set repo_dir (realpath "$test_file_dir/..")
+    end
     set -l skill "$repo_dir/skills/git-fish/SKILL.md"
     set -l failed 0
 
