@@ -26,11 +26,17 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #      merges leave its own commits outside that history (the same rule
     #      'git wlist' uses for its pr-merged state). A CLOSED (unmerged) PR,
     #      or one merged into some other branch, is still refused.
-    #   6. Remove the worktree only if the commit has been merged
+    #   6. Check for uncommitted changes (modified tracked files or untracked
+    #      files; ignored files do not count) and list them
+    #   7. Remove the worktree only if the commit has been merged and nothing
+    #      uncommitted would be lost. --dry-run reports the same verdict and
+    #      exit status without removing anything, so it answers "would this
+    #      worktree be removed?"
     #
     # OPTIONS
     #   -n, --dry-run        Show what would be removed without actually removing anything
     #   -f, --force          Remove worktree even if commits are not merged upstream
+    #                        or it has uncommitted changes (both are lost)
     #   --no-delete-branch   Keep the local branch after removing worktree
     #   --no-forge           Never consult gh; rely on commit ancestry alone
     #   -h, --help           Show this help message
@@ -70,7 +76,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   0    Success - worktree was removed or would be removed (dry-run)
     #   1    Invalid arguments or worktree not found
     #   2    Git command failed
-    #   3    Commits not merged upstream (use --force to override)
+    #   3    Commits not merged upstream (use --force to override); also
+    #        used when the worktree is both unmerged and has uncommitted changes
+    #   4    Merged, but has uncommitted changes (use --force to override)
     #   130  Interrupted (Ctrl-C during the fetch)
 
     # Parse command line arguments
@@ -321,9 +329,38 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         end
     end
 
+    # Uncommitted work (modified tracked files or untracked files; ignored files
+    # do not count) would be lost by the forced removal below, so it blocks
+    # removal on its own, independently of the merge check.
+    set -l dirty_lines (git status --porcelain 2>/dev/null)
+    set -l dirty_count (count $dirty_lines)
+    if test $dirty_count -gt 0
+        printf "  ✗ Worktree has %d uncommitted change(s):\n" $dirty_count
+        set -l shown_count $dirty_count
+        if test $shown_count -gt 10
+            set shown_count 10
+        end
+        printf "      %s\n" $dirty_lines[1..$shown_count]
+        if test $dirty_count -gt 10
+            printf "      ... and %d more\n" (math $dirty_count - 10)
+        end
+    else
+        printf "  ✓ Worktree has no uncommitted changes.\n"
+    end
+
     popd >/dev/null
 
     # Decide whether to remove the worktree
+    if test $dirty_count -gt 0; and test $commit_found = true; and not set -q _flag_force
+        printf "\nRefusing to remove worktree: %d uncommitted change(s) would be lost.\n" \
+            $dirty_count
+        printf "Options:\n"
+        printf "  1. Commit, stash, or discard the changes first\n"
+        printf "  2. Use --force to remove anyway (DANGER: will lose uncommitted work)\n"
+        printf "  3. Use --dry-run to see what would happen\n"
+        return 4
+    end
+
     if test $commit_found = true; or set -q _flag_force
         # Change to main repository to run worktree remove
         pushd "$main_repo" >/dev/null
@@ -338,6 +375,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             else
                 printf "\nWould FORCE remove worktree '%s' (commits NOT merged - forced).\n" $worktree_name
             end
+            if test $dirty_count -gt 0
+                printf "Would discard %d uncommitted change(s) (forced).\n" $dirty_count
+            end
 
             # Show branch deletion info
             if test -n "$current_branch_name"; and not set -q _flag_no_delete_branch
@@ -351,6 +391,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         else
             if test $commit_found = false
                 printf "\nWARNING: Forcing removal of worktree with unmerged commits!\n"
+            end
+            if test $dirty_count -gt 0
+                printf "WARNING: Discarding %d uncommitted change(s)!\n" $dirty_count
             end
 
             printf "Removing worktree '%s'...\n" $worktree_name
@@ -396,6 +439,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             printf "\nRefusing to remove worktree: its PR was closed without merging.\n"
         else
             printf "\nRefusing to remove worktree: commits are not merged upstream.\n"
+        end
+        if test $dirty_count -gt 0
+            printf "It also has %d uncommitted change(s) that removal would lose.\n" $dirty_count
         end
         printf "Options:\n"
         printf "  1. Merge your changes to %s first\n" $upstream_branch

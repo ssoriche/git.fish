@@ -414,6 +414,145 @@ function test_git_wrm_merge_check --description "Test git-wrm only removes workt
     return $failed_tests
 end
 
+function test_git_wrm_dirty_check --description "Test git-wrm refuses dirty worktrees unless --force"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wrm uncommitted-changes check..."
+
+    if not test -f "$test_functions_dir/git-wrm.fish"
+        echo "❌ git-wrm.fish not found in: $test_functions_dir"
+        return 1
+    end
+    set -p fish_function_path $test_functions_dir
+    source $test_functions_dir/git-wrm.fish
+
+    set -l remote_dir /tmp/git-fish-wrmd-remote-(random).git
+    set -l main_dir /tmp/git-fish-wrmd-main-(random)
+    rm -rf "$remote_dir" "$main_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+
+    # Two worktrees whose branches are merged into origin/main, plus one unmerged
+    set -l merged_wt /tmp/git-fish-wrmd-merged-(random)
+    set -l forced_wt /tmp/git-fish-wrmd-forced-(random)
+    set -l unmerged_wt /tmp/git-fish-wrmd-unmerged-(random)
+    rm -rf "$merged_wt" "$forced_wt" "$unmerged_wt"
+    git -C "$main_dir" worktree add -b merged "$merged_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree add -b forced "$forced_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree add -b unmerged "$unmerged_wt" >/dev/null 2>&1
+    echo unmerged >"$unmerged_wt/unmerged.txt"
+    git -C "$unmerged_wt" add unmerged.txt
+    git -C "$unmerged_wt" commit -m "Unmerged work" >/dev/null 2>&1
+
+    # Test 1: merged worktree with an untracked file is refused (exit 4), file kept
+    echo "Test 1: git-wrm refuses merged worktree with an untracked file..."
+    set total_tests (math $total_tests + 1)
+    echo scratch >"$merged_wt/notes.txt"
+    set -l out (git-wrm "$merged_wt" 2>&1)
+    set -l rc $status
+    if test $rc -eq 4; and test -f "$merged_wt/notes.txt"
+        and string match -q '*uncommitted*' "$out"
+        echo "✅ git-wrm refused dirty worktree (exit 4) and kept the file"
+    else
+        echo "❌ git-wrm should refuse untracked changes: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 2: dry-run reports the refusal with exit 4 and removes nothing
+    echo "Test 2: git-wrm --dry-run reports uncommitted changes..."
+    set total_tests (math $total_tests + 1)
+    set out (git-wrm --dry-run "$merged_wt" 2>&1)
+    set rc $status
+    if test $rc -eq 4; and test -d "$merged_wt"; and string match -q '*notes.txt*' "$out"
+        echo "✅ git-wrm --dry-run lists the change and exits 4"
+    else
+        echo "❌ git-wrm --dry-run should report dirty worktree: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 3: a modified tracked file is refused too
+    echo "Test 3: git-wrm refuses merged worktree with a modified tracked file..."
+    set total_tests (math $total_tests + 1)
+    rm -f "$merged_wt/notes.txt"
+    echo changed >>"$merged_wt/README.md"
+    git-wrm "$merged_wt" >/dev/null 2>&1
+    set rc $status
+    if test $rc -eq 4; and test -d "$merged_wt"
+        echo "✅ git-wrm refused modified tracked file (exit 4)"
+    else
+        echo "❌ git-wrm should refuse modified tracked file: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 4: once clean, the merged worktree is removed
+    echo "Test 4: git-wrm removes the merged worktree once clean..."
+    set total_tests (math $total_tests + 1)
+    git -C "$merged_wt" checkout -- README.md
+    git-wrm "$merged_wt" >/dev/null 2>&1
+    set rc $status
+    if test $rc -eq 0; and not test -d "$merged_wt"
+        echo "✅ git-wrm removed clean merged worktree"
+    else
+        echo "❌ git-wrm should remove clean merged worktree: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 5: --force removes a dirty merged worktree, and dry-run says it is forced
+    echo "Test 5: git-wrm --force removes a dirty worktree..."
+    set total_tests (math $total_tests + 1)
+    echo scratch >"$forced_wt/notes.txt"
+    set out (git-wrm --force --dry-run "$forced_wt" 2>&1)
+    set -l dry_rc $status
+    git-wrm --force "$forced_wt" >/dev/null 2>&1
+    set rc $status
+    if test $dry_rc -eq 0; and string match -q '*uncommitted*' "$out"; and test $rc -eq 0
+        and not test -d "$forced_wt"
+        echo "✅ git-wrm --force removed dirty worktree and dry-run named the override"
+    else
+        echo "❌ git-wrm --force on dirty worktree: dry=$dry_rc exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 6: unmerged AND dirty keeps exit 3 but reports both reasons
+    echo "Test 6: git-wrm reports both reasons for unmerged and dirty..."
+    set total_tests (math $total_tests + 1)
+    echo scratch >"$unmerged_wt/notes.txt"
+    set out (git-wrm --dry-run "$unmerged_wt" 2>&1)
+    set rc $status
+    if test $rc -eq 3; and string match -q '*not merged*' "$out"
+        and string match -q '*uncommitted*' "$out"
+        echo "✅ git-wrm exits 3 and names both reasons"
+    else
+        echo "❌ git-wrm unmerged+dirty: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    git -C "$main_dir" worktree remove --force "$unmerged_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree remove --force "$merged_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree remove --force "$forced_wt" >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$merged_wt" "$forced_wt" "$unmerged_wt"
+
+    echo "📊 git-wrm dirty check results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function test_git_wrm_pr_merged --description "Test git-wrm consults gh for squash-merged PRs like the classifier does"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
@@ -3959,6 +4098,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wrm_merge_check
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wrm_dirty_check
     set total_failed (math $total_failed + $status)
 
     echo ""
