@@ -40,7 +40,7 @@ This repo is also a Claude Code plugin marketplace. Its `git-fish` skill teaches
 Claude the bare layout and which command does which job, so it uses
 `git wadd`/`wpr`/`wrm`/`wclean` instead of raw `git worktree`.
 
-```fish
+```text
 /plugin marketplace add ssoriche/git.fish
 /plugin install git-fish@git-fish
 ```
