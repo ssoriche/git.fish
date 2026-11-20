@@ -1,6 +1,6 @@
 ---
 name: git-fish
-description: Use when creating, checking out, listing, switching between, removing, or cleaning up git worktrees; starting work on a new branch; checking out a GitHub PR locally; cloning a repo; or when a directory has a `.bare/` folder beside a `.git` file. Covers the git.fish bare layout and its commands (git wclone, wadd, wpr, wlist, wrm, wclean, bclean).
+description: Use when creating, checking out, listing, switching between, removing, or cleaning up git worktrees; starting a branch in its own worktree; checking out a GitHub PR as a worktree; cloning a repo into a bare worktree layout; or when a directory has a `.bare/` folder beside a `.git` file. Covers the git.fish bare layout and its commands (git wclone, wadd, wpr, wlist, wrm, wclean, bclean).
 ---
 
 # git.fish worktree commands
@@ -46,7 +46,7 @@ text is the source of truth; do not guess flags.
 | Job | Command |
 |---|---|
 | Clone a repo into a bare layout | `git wclone <url> [dest]` |
-| Start work on a new branch | `git wadd <name> [branch]` (branches from the upstream/integration branch) |
+| Start work on a new branch | `git wadd <name> [start-point]` (creates branch `<name>`; start point defaults to the upstream/integration branch) |
 | Check out an existing local branch as a worktree | `git wadd <branch>` |
 | Check out a GitHub PR | `git wpr <pr-number> [name]` |
 | See every worktree's state (merged, pr-merged, pr-closed, gone, stale, active) | `git wlist` |
@@ -61,8 +61,8 @@ text is the source of truth; do not guess flags.
 
 `git wrm`, `git wclean`, and `git bclean` delete worktrees and branches.
 
-- Run `--dry-run` first (`git wclean --check` for a quick report) and show the
-  user what would go.
+- Run `--dry-run` first (or `git wlist` for an overview) and show the user
+  what would go.
 - Do not pass `--force` unless the user asks for it.
 - `wclean` asks for confirmation on `gone` and `pr-closed` rows; those may hold
   unmerged work. Leave that decision to the user.
