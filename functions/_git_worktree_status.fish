@@ -70,7 +70,7 @@ function _git_worktree_status --description "Classify a git worktree's lifecycle
     # Dirty: any staged, unstaged, or untracked changes. Fail-safe: if the
     # status check itself fails, report dirty rather than clean.
     set -l dirty clean
-    set -l porcelain (git -C "$worktree_path" status --porcelain 2>/dev/null)
+    set -l porcelain (git -C "$worktree_path" status --porcelain --untracked-files=all 2>/dev/null)
     if test $status -ne 0; or test -n "$porcelain"
         set dirty dirty
     end

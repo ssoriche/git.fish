@@ -544,10 +544,32 @@ function test_git_wrm_dirty_check --description "Test git-wrm refuses dirty work
         set failed_tests (math $failed_tests + 1)
     end
 
+    # Test 7: status.showUntrackedFiles=no must not hide untracked files from
+    # wrm or from the shared classifier (wlist's dirty column, wclean)
+    echo "Test 7: untracked files count even with status.showUntrackedFiles=no..."
+    set total_tests (math $total_tests + 1)
+    set -l hidden_wt /tmp/git-fish-wrmd-hidden-(random)
+    rm -rf "$hidden_wt"
+    git -C "$main_dir" worktree add -b hidden "$hidden_wt" >/dev/null 2>&1
+    git -C "$main_dir" config status.showUntrackedFiles no
+    echo secret >"$hidden_wt/notes.txt"
+    git-wrm "$hidden_wt" >/dev/null 2>&1
+    set rc $status
+    set -l status_line (_git_worktree_status --no-forge "$hidden_wt" origin/main 30)
+    set -l dirty_field (string split \t -- $status_line)[4]
+    if test $rc -eq 4; and test -f "$hidden_wt/notes.txt"; and test "$dirty_field" = dirty
+        echo "✅ wrm and _git_worktree_status see untracked files despite the config"
+    else
+        echo "❌ hidden untracked file: wrm exit=$rc classifier dirty=$dirty_field"
+        set failed_tests (math $failed_tests + 1)
+    end
+    git -C "$main_dir" config --unset status.showUntrackedFiles
+
     git -C "$main_dir" worktree remove --force "$unmerged_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$merged_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$forced_wt" >/dev/null 2>&1
-    rm -rf "$remote_dir" "$main_dir" "$merged_wt" "$forced_wt" "$unmerged_wt"
+    git -C "$main_dir" worktree remove --force "$hidden_wt" >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$merged_wt" "$forced_wt" "$unmerged_wt" "$hidden_wt"
 
     echo "📊 git-wrm dirty check results: $failed_tests/$total_tests failed"
     return $failed_tests
