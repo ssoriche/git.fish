@@ -14,8 +14,9 @@ The Bash tool is not fish. Always run through fish:
 
     fish -c 'git wadd feat-x'
 
-Check availability once per session: `fish -c 'functions -q git-wadd'`. If that
-fails, the functions are not installed: fall back to plain git and say so.
+Check availability once per session: `fish -c 'git wadd --help >/dev/null'`.
+If that fails, git.fish (or its `git` wrapper) is not installed: fall back to
+plain git and say so.
 
 Commands that "change to the new worktree" (`wclone`, `wadd`, `wpr`) only change
 the fish subprocess's directory. `cd` into the result yourself afterwards.
@@ -46,12 +47,12 @@ text is the source of truth; do not guess flags.
 | Job | Command |
 |---|---|
 | Clone a repo into a bare layout | `git wclone <url> [dest]` |
-| Start work on a new branch | `git wadd <name> [start-point]` (creates branch `<name>`; start point defaults to the upstream/integration branch) |
-| Check out an existing local branch as a worktree | `git wadd <branch>` |
+| Start work on a new branch | `git wadd <name> [start-point]` (creates branch `<name>`; the start point defaults to the current branch's upstream, else `origin/main`, so pass the integration branch explicitly when it matters) |
+| Check out an existing local branch as a worktree | `git wadd <branch>`; for a branch name containing `/` (rejected as a worktree name) use `git worktree add <container>/<name-without-slash> <branch>` |
 | Check out a GitHub PR | `git wpr <pr-number> [name]` |
 | See every worktree's state (merged, pr-merged, pr-closed, gone, stale, active) | `git wlist` |
 | Remove one worktree after its work is merged | `git wrm <name>` |
-| Remove all merged worktrees | `git wclean` (defaults to the container directory) |
+| Remove all merged worktrees | `git wclean` in a bare layout (defaults to the container directory); elsewhere `git wclean <worktrees-directory>` |
 | Delete merged local branches | `git bclean` |
 | Print the current branch | `cwb` |
 | Diff / show without a pager | `git diff-plain`, `git show-plain` |
@@ -61,8 +62,12 @@ text is the source of truth; do not guess flags.
 
 `git wrm`, `git wclean`, and `git bclean` delete worktrees and branches.
 
-- Run `--dry-run` first (or `git wlist` for an overview) and show the user
-  what would go.
+- Run each command with `--dry-run` first and show the user what would go.
+  `git wlist` is an extra overview, not a substitute: it does not show local
+  branches without a worktree, which `bclean` can delete.
+- `git wrm` force-removes the worktree once its HEAD is merged, so uncommitted
+  changes are lost. Check `git -C <path> status --porcelain` (or the dirty
+  column of `git wlist`) first; if the worktree is dirty, stop and ask the user.
 - Do not pass `--force` unless the user asks for it.
 - `wclean` asks for confirmation on `gone` and `pr-closed` rows; those may hold
   unmerged work. Leave that decision to the user.

@@ -4170,14 +4170,27 @@ function test_claude_plugin --description "Test the Claude Code plugin skill cov
 
     set -l skill_text (string collect <"$skill")
 
-    # Frontmatter must open the file and carry name + description
-    set -l first_line (head -n 1 "$skill")
-    if test "$first_line" != ---
-        echo "❌ SKILL.md does not start with frontmatter"
+    # Frontmatter must open the file, be closed by a second ---, and carry
+    # name + description inside that block (not anywhere in the body)
+    set -l skill_lines (cat "$skill")
+    set -l close_idx 0
+    if test "$skill_lines[1]" = ---
+        for i in (seq 2 (count $skill_lines))
+            if test "$skill_lines[$i]" = ---
+                set close_idx $i
+                break
+            end
+        end
+    end
+    set -l frontmatter
+    if test $close_idx -gt 2
+        set frontmatter $skill_lines[2..(math $close_idx - 1)]
+    else
+        echo "❌ SKILL.md does not start with a closed, non-empty frontmatter block"
         set failed (math $failed + 1)
     end
     for key in name description
-        if not string match -rq "(?m)^$key: \S" -- "$skill_text"
+        if not string match -rq "^$key: \S" -- $frontmatter
             echo "❌ SKILL.md frontmatter missing '$key'"
             set failed (math $failed + 1)
         end
