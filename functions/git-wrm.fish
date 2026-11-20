@@ -332,7 +332,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     # Uncommitted work (modified tracked files or untracked files; ignored files
     # do not count) would be lost by the forced removal below, so it blocks
     # removal on its own, independently of the merge check.
-    set -l dirty_lines (git status --porcelain 2>/dev/null)
+    set -l dirty_lines (git status --porcelain --untracked-files=all 2>/dev/null)
     set -l dirty_count (count $dirty_lines)
     if test $dirty_count -gt 0
         printf "  ✗ Worktree has %d uncommitted change(s):\n" $dirty_count
