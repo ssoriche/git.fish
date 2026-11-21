@@ -565,11 +565,63 @@ function test_git_wrm_dirty_check --description "Test git-wrm refuses dirty work
     end
     git -C "$main_dir" config --unset status.showUntrackedFiles
 
+    # Test 8: submodule.<name>.ignore=all must not hide changes inside a submodule
+    echo "Test 8: submodule changes count even with submodule.<name>.ignore=all..."
+    set total_tests (math $total_tests + 1)
+    set -l sub_dir /tmp/git-fish-wrmd-sub-(random)
+    set -l sub_wt /tmp/git-fish-wrmd-subwt-(random)
+    rm -rf "$sub_dir" "$sub_wt"
+    git init -b main "$sub_dir" >/dev/null 2>&1
+    echo lib >"$sub_dir/lib.txt"
+    git -C "$sub_dir" add lib.txt
+    git -C "$sub_dir" -c user.name=T -c user.email=t@example.com -c commit.gpgsign=false \
+        commit -m lib >/dev/null 2>&1
+    git -C "$main_dir" -c protocol.file.allow=always submodule add "$sub_dir" lib >/dev/null 2>&1
+    git -C "$main_dir" commit -m "Add lib submodule" >/dev/null 2>&1
+    git -C "$main_dir" push origin main >/dev/null 2>&1
+    git -C "$main_dir" fetch origin >/dev/null 2>&1
+    git -C "$main_dir" worktree add -b withsub "$sub_wt" origin/main >/dev/null 2>&1
+    git -C "$sub_wt" -c protocol.file.allow=always submodule update --init >/dev/null 2>&1
+    git -C "$main_dir" config submodule.lib.ignore all
+    echo changed >>"$sub_wt/lib/lib.txt"
+    git-wrm "$sub_wt" >/dev/null 2>&1
+    set rc $status
+    set status_line (_git_worktree_status --no-forge "$sub_wt" origin/main 30)
+    set dirty_field (string split \t -- $status_line)[4]
+    if test $rc -eq 4; and test -f "$sub_wt/lib/lib.txt"; and test "$dirty_field" = dirty
+        echo "✅ wrm and _git_worktree_status see submodule changes despite ignore=all"
+    else
+        echo "❌ hidden submodule change: wrm exit=$rc classifier dirty=$dirty_field"
+        set failed_tests (math $failed_tests + 1)
+    end
+    git -C "$main_dir" config --unset submodule.lib.ignore
+
+    # Test 9: a failing status check aborts with exit 2 instead of reading as clean
+    echo "Test 9: git-wrm exits 2 when git status fails..."
+    set total_tests (math $total_tests + 1)
+    set -l broken_wt /tmp/git-fish-wrmd-broken-(random)
+    rm -rf "$broken_wt"
+    git -C "$main_dir" worktree add -b broken "$broken_wt" origin/main >/dev/null 2>&1
+    echo scratch >"$broken_wt/notes.txt"
+    printf garbage >(git -C "$broken_wt" rev-parse --git-dir)/index
+    set out (git-wrm "$broken_wt" 2>&1)
+    set rc $status
+    if test $rc -eq 2; and test -f "$broken_wt/notes.txt"
+        and string match -q '*Cannot check worktree*' "$out"
+        echo "✅ git-wrm aborted with exit 2 and kept the worktree"
+    else
+        echo "❌ git-wrm with failing status: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    git -C "$main_dir" worktree remove --force --force "$sub_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree remove --force --force "$broken_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$unmerged_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$merged_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$forced_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$hidden_wt" >/dev/null 2>&1
-    rm -rf "$remote_dir" "$main_dir" "$merged_wt" "$forced_wt" "$unmerged_wt" "$hidden_wt"
+    rm -rf "$remote_dir" "$main_dir" "$merged_wt" "$forced_wt" "$unmerged_wt" "$hidden_wt" \
+        "$sub_dir" "$sub_wt" "$broken_wt"
 
     echo "📊 git-wrm dirty check results: $failed_tests/$total_tests failed"
     return $failed_tests

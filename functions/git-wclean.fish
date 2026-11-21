@@ -726,7 +726,8 @@ function _wclean_recheck_worktree
         printf "new commits since the plan"
         return 1
     end
-    set -l porcelain (git -C "$path" status --porcelain --untracked-files=all 2>/dev/null)
+    set -l porcelain (git -C "$path" status --porcelain --untracked-files=all \
+        --ignore-submodules=none 2>/dev/null)
     if test $status -ne 0; or test -n "$porcelain"
         printf "uncommitted changes since the plan"
         return 1
