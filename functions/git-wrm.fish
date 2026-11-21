@@ -26,8 +26,9 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #      merges leave its own commits outside that history (the same rule
     #      'git wlist' uses for its pr-merged state). A CLOSED (unmerged) PR,
     #      or one merged into some other branch, is still refused.
-    #   6. Check for uncommitted changes (modified tracked files or untracked
-    #      files; ignored files do not count) and list them
+    #   6. Check for uncommitted changes (modified tracked files, untracked
+    #      files, or changes inside submodules; ignored files do not count)
+    #      and list them. If the check itself fails, stop with exit 2
     #   7. Remove the worktree only if the commit has been merged and nothing
     #      uncommitted would be lost. --dry-run reports the same verdict and
     #      exit status without removing anything, so it answers "would this
@@ -329,10 +330,18 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
         end
     end
 
-    # Uncommitted work (modified tracked files or untracked files; ignored files
-    # do not count) would be lost by the forced removal below, so it blocks
-    # removal on its own, independently of the merge check.
-    set -l dirty_lines (git status --porcelain --untracked-files=all 2>/dev/null)
+    # Uncommitted work (modified tracked files, untracked files, or changes in
+    # submodules; ignored files do not count) would be lost by removal, so it
+    # blocks removal on its own, independently of the merge check. The flags
+    # override status.showUntrackedFiles and submodule.<name>.ignore.
+    set -l dirty_lines (git status --porcelain --untracked-files=all \
+        --ignore-submodules=none 2>/dev/null)
+    or begin
+        printf "Error: Cannot check worktree '%s' for uncommitted changes.\n" \
+            $worktree_name >&2
+        popd >/dev/null
+        return 2
+    end
     set -l dirty_count (count $dirty_lines)
     if test $dirty_count -gt 0
         printf "  ✗ Worktree has %d uncommitted change(s):\n" $dirty_count
@@ -397,6 +406,8 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             end
 
             printf "Removing worktree '%s'...\n" $worktree_name
+            # --force is always passed: the checks above are the gate, and git
+            # refuses to remove any worktree with initialized submodules without it.
             if git worktree remove --force "$worktree_name" >/dev/null 2>&1
                 printf "✓ Successfully removed worktree: %s\n" $worktree_name
 
