@@ -65,10 +65,15 @@ text is the source of truth; do not guess flags.
 - Run each command with `--dry-run` first and show the user what would go.
   `git wlist` is an extra overview, not a substitute: it does not show local
   branches without a worktree, which `bclean` can delete.
-- Removing a worktree deletes everything in it that is not committed. Before
-  `git wrm`, run `git -C <path> status --porcelain --untracked-files=all`
-  (the flag matters: `status.showUntrackedFiles=no` would hide untracked
-  files); if it prints anything, stop and ask the user.
+- `git wrm --dry-run <name>` gives the verdict without removing anything:
+  exit 0 means it would be removed, exit 3 means the work is not merged, and
+  exit 4 means it is merged but has uncommitted changes (listed in the
+  output). On 3 or 4, stop and ask the user.
+- Removing a worktree deletes everything in it that is not committed. If the
+  installed `wrm` predates exit 4 (its `--help` does not list it), also run
+  `git -C <path> status --porcelain --untracked-files=all` first (the flag
+  matters: `status.showUntrackedFiles=no` would hide untracked files); if it
+  prints anything, stop and ask the user.
 - Ignored files (`.env`, local config) are deleted too and show in neither
   check. Run `git -C <path> status --porcelain --ignored`; if anything other
   than build output or dependencies is listed, name it to the user first.
