@@ -38,7 +38,10 @@ text is the source of truth; do not guess flags.
 - Inside a bare layout, `wadd`, `wpr`, and `wrm` take a **worktree name**, not a
   path: it is anchored to the container directory no matter which worktree
   you run from. Names must not contain `/`; use `.` or `-` (`ssoriche.feat-x`).
-- Outside a bare layout the argument is an ordinary path relative to cwd.
+- Outside a bare layout the argument is an ordinary path relative to cwd, and
+  `wadd` also uses it as the new branch name, so `git wadd ../feat-x` fails.
+  For a path that is not a valid branch name, use
+  `git worktree add -b <branch> <path> <start-point>`.
 - Never run `git fetch --depth` in a container: it grafts a shallow boundary
   that breaks every worktree's history.
 
@@ -74,11 +77,18 @@ text is the source of truth; do not guess flags.
   `git -C <path> status --porcelain --untracked-files=all` first (the flag
   matters: `status.showUntrackedFiles=no` would hide untracked files); if it
   prints anything, stop and ask the user.
-- Ignored files (`.env`, local config) are deleted too and show in neither
-  check. Run `git -C <path> status --porcelain --ignored`; if anything other
-  than build output or dependencies is listed, name it to the user first.
+- Ignored files (`.env`, local config) are deleted too and block neither
+  `wrm` nor `wclean`. For each worktree about to be removed, run
+  `git -C <path> status --porcelain --ignored`; if anything other than build
+  output or dependencies is listed, name it to the user first.
+- A real `wclean` run fetches and plans again, so it can remove a worktree
+  the earlier preview did not list. Run `git wclean --dry-run` again right
+  before the real run; if its list differs from what the user approved, stop
+  and ask.
 - Do not pass `--force` unless the user asks for it.
 - `wclean` asks for confirmation on `gone` and `pr-closed` rows; those may hold
-  unmerged work. Leave that decision to the user.
+  unmerged work. Leave that decision to the user. `wclean --force` skips that
+  prompt and removes those rows (dirty worktrees are still never removed), so
+  tell the user before running it.
 - Never remove a bare-layout worktree with raw `git worktree remove` or `rm -rf`;
   `git wrm` checks that the work is merged first.
