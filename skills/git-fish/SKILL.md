@@ -83,7 +83,8 @@ text is the source of truth; do not guess flags.
   output or dependencies is listed, name it to the user first.
 - Do not run a real `git wclean` unless the user asks for that command by
   name. It fetches and plans again, so it can remove a worktree the preview
-  did not list, without its ignored files being checked. Use
+  did not list, without its ignored files being checked. Even when asked,
+  tell the user that first and run it only after they agree. Otherwise use
   `git wclean --dry-run` only to find candidates; then, for each worktree the
   user approves, check its ignored files and run `git wrm <name>`.
 - Do not pass `--force` unless the user asks for it.
