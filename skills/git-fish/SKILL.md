@@ -86,7 +86,11 @@ text is the source of truth; do not guess flags.
   did not list, without its ignored files being checked. Even when asked,
   tell the user that first and run it only after they agree. Otherwise use
   `git wclean --dry-run` only to find candidates; then, for each worktree the
-  user approves, check its ignored files and run `git wrm <name>`.
+  user approves, check its ignored files and run `git wrm` on that same
+  worktree: in a bare layout, its name, run from inside the container that
+  was previewed; elsewhere, the path the preview listed. If the user wants
+  branches kept (`--no-delete-branch` on the preview), pass
+  `--no-delete-branch` to each `wrm` too.
 - Do not pass `--force` unless the user asks for it.
 - `gone` and `pr-closed` rows may hold unmerged work; `wrm` refuses them with
   exit 3. Leave that decision to the user. If the user does ask for a real
