@@ -513,13 +513,35 @@ function test_git_wrm_head_recheck --description "Test git-wrm stops when HEAD m
     rm -rf "$forced_wt"
     git -C "$main_dir" worktree add -b forcedwt "$forced_wt" >/dev/null 2>&1
     git -C "$forced_wt" commit --allow-empty -m "Unmerged work" >/dev/null 2>&1
+    git -C "$main_dir" config branch.forcedwt.remote origin
+    git -C "$main_dir" config branch.forcedwt.merge refs/heads/forcedwt
     git-wrm --force "$forced_wt" >/dev/null 2>&1
     set rc $status
+    set -l forced_cfg (git -C "$main_dir" config --get-regexp '^branch\.forcedwt\.' 2>/dev/null)
     if test $rc -eq 0; and not test -d "$forced_wt"
         and not git -C "$main_dir" rev-parse --verify -q refs/heads/forcedwt >/dev/null
-        echo "✅ git-wrm --force removed the worktree and force-deleted its branch"
+        and test -z "$forced_cfg"
+        echo "✅ git-wrm --force removed the worktree, its branch, and the branch config"
     else
-        echo "❌ git-wrm --force should delete the unmoved unmerged branch: exit=$rc"
+        echo "❌ git-wrm --force should delete the unmoved unmerged branch: exit=$rc cfg='$forced_cfg'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 5: a branch another worktree has checked out is kept
+    echo "Test 5: git-wrm keeps a branch that another worktree has checked out..."
+    set total_tests (math $total_tests + 1)
+    set -l shared_wt /tmp/git-fish-wrmh-shared-(random)
+    set -l shared_wt2 /tmp/git-fish-wrmh-shared2-(random)
+    rm -rf "$shared_wt" "$shared_wt2"
+    git -C "$main_dir" worktree add -b sharedwt "$shared_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree add --force "$shared_wt2" sharedwt >/dev/null 2>&1
+    git-wrm "$shared_wt" >/dev/null 2>&1
+    set rc $status
+    if test $rc -eq 0; and not test -d "$shared_wt"; and test -d "$shared_wt2"
+        and git -C "$main_dir" rev-parse --verify -q refs/heads/sharedwt >/dev/null
+        echo "✅ git-wrm removed the worktree and kept the shared branch"
+    else
+        echo "❌ git-wrm should keep a branch still checked out elsewhere: exit=$rc"
         set failed_tests (math $failed_tests + 1)
     end
 
@@ -529,7 +551,9 @@ function test_git_wrm_head_recheck --description "Test git-wrm stops when HEAD m
     git -C "$main_dir" worktree remove --force "$forced_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$race_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$clean_wt" >/dev/null 2>&1
-    rm -rf "$remote_dir" "$main_dir" "$race_wt" "$clean_wt" "$forced_wt"
+    git -C "$main_dir" worktree remove --force "$shared_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree remove --force "$shared_wt2" >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$race_wt" "$clean_wt" "$forced_wt" "$shared_wt" "$shared_wt2"
 
     echo "📊 git-wrm HEAD recheck results: $failed_tests/$total_tests failed"
     return $failed_tests
