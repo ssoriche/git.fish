@@ -414,6 +414,127 @@ function test_git_wrm_merge_check --description "Test git-wrm only removes workt
     return $failed_tests
 end
 
+function test_git_wrm_head_recheck --description "Test git-wrm stops when HEAD moves during the check"
+    set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
+    if test -z "$test_functions_dir"
+        set -l test_file_dir (dirname (status --current-filename))
+        set test_functions_dir "$test_file_dir/../functions"
+        if test -d "$test_functions_dir"
+            set test_functions_dir (realpath "$test_functions_dir")
+        end
+    end
+    set -l failed_tests 0
+    set -l total_tests 0
+
+    echo "🔍 Testing git-wrm HEAD recheck before removal..."
+
+    if not test -f "$test_functions_dir/git-wrm.fish"
+        echo "❌ git-wrm.fish not found in: $test_functions_dir"
+        return 1
+    end
+    set -p fish_function_path $test_functions_dir
+    source $test_functions_dir/git-wrm.fish
+
+    set -l remote_dir /tmp/git-fish-wrmh-remote-(random).git
+    set -l main_dir /tmp/git-fish-wrmh-main-(random)
+    rm -rf "$remote_dir" "$main_dir"
+    git init --bare -b main "$remote_dir" >/dev/null 2>&1
+    git clone "$remote_dir" "$main_dir" >/dev/null 2>&1
+    git -C "$main_dir" config user.name "Test User"
+    git -C "$main_dir" config user.email "test@example.com"
+    git -C "$main_dir" config commit.gpgsign false
+    echo "# Test" >"$main_dir/README.md"
+    git -C "$main_dir" add README.md
+    git -C "$main_dir" commit -m "Initial commit" >/dev/null 2>&1
+    git -C "$main_dir" push -u origin main >/dev/null 2>&1
+    git -C "$main_dir" remote set-head origin main >/dev/null 2>&1
+
+    # Stand in for the fetch: commit in the worktree named by _wrmh_race_wt while
+    # wrm is "fetching", the way a concurrent process could.
+    function _git_fetch_progress
+        if set -q _wrmh_race_wt
+            git -C "$_wrmh_race_wt" commit --allow-empty -m "Race commit" >/dev/null 2>&1
+        end
+        return 0
+    end
+
+    set -l race_wt /tmp/git-fish-wrmh-race-(random)
+    set -l clean_wt /tmp/git-fish-wrmh-clean-(random)
+    rm -rf "$race_wt" "$clean_wt"
+    git -C "$main_dir" worktree add -b race "$race_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree add -b cleanwt "$clean_wt" >/dev/null 2>&1
+
+    # Test 1: a commit during the fetch stops removal with exit 5
+    echo "Test 1: git-wrm exits 5 when a commit lands during the fetch..."
+    set total_tests (math $total_tests + 1)
+    set -g _wrmh_race_wt "$race_wt"
+    set -l out (git-wrm "$race_wt" 2>&1)
+    set -l rc $status
+    set -l race_subject (git -C "$main_dir" log -1 --format=%s race 2>/dev/null)
+    if test $rc -eq 5; and test -d "$race_wt"; and test "$race_subject" = "Race commit"
+        and string match -q '*changed during the check*' "$out"
+        echo "✅ git-wrm refused (exit 5) and kept the worktree and the new commit"
+    else
+        echo "❌ git-wrm should stop when HEAD moves: exit=$rc branch tip='$race_subject'"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 2: --force does not override the recheck
+    echo "Test 2: git-wrm --force still exits 5 when HEAD moves..."
+    set total_tests (math $total_tests + 1)
+    git-wrm --force "$race_wt" >/dev/null 2>&1
+    set rc $status
+    if test $rc -eq 5; and test -d "$race_wt"
+        echo "✅ git-wrm --force refused the moved worktree"
+    else
+        echo "❌ git-wrm --force should still stop when HEAD moves: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+    set -e _wrmh_race_wt
+
+    # Test 3: without a race, a clean merged worktree is still removed
+    echo "Test 3: git-wrm removes a merged worktree whose HEAD did not move..."
+    set total_tests (math $total_tests + 1)
+    git-wrm "$clean_wt" >/dev/null 2>&1
+    set rc $status
+    if test $rc -eq 0; and not test -d "$clean_wt"
+        and not git -C "$main_dir" rev-parse --verify -q refs/heads/cleanwt >/dev/null
+        echo "✅ git-wrm removed the worktree and its branch"
+    else
+        echo "❌ git-wrm should remove an unchanged merged worktree: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Test 4: the forced branch delete (update-ref with the checked commit) still
+    # deletes an unmerged branch when --force is given and nothing moved
+    echo "Test 4: git-wrm --force deletes an unmerged branch that did not move..."
+    set total_tests (math $total_tests + 1)
+    set -l forced_wt /tmp/git-fish-wrmh-forced-(random)
+    rm -rf "$forced_wt"
+    git -C "$main_dir" worktree add -b forcedwt "$forced_wt" >/dev/null 2>&1
+    git -C "$forced_wt" commit --allow-empty -m "Unmerged work" >/dev/null 2>&1
+    git-wrm --force "$forced_wt" >/dev/null 2>&1
+    set rc $status
+    if test $rc -eq 0; and not test -d "$forced_wt"
+        and not git -C "$main_dir" rev-parse --verify -q refs/heads/forcedwt >/dev/null
+        echo "✅ git-wrm --force removed the worktree and force-deleted its branch"
+    else
+        echo "❌ git-wrm --force should delete the unmoved unmerged branch: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
+
+    # Restore the real fetch runner: fish does not autoload it again after -e
+    functions -e _git_fetch_progress
+    source $test_functions_dir/_git_fetch_progress.fish
+    git -C "$main_dir" worktree remove --force "$forced_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree remove --force "$race_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree remove --force "$clean_wt" >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$race_wt" "$clean_wt" "$forced_wt"
+
+    echo "📊 git-wrm HEAD recheck results: $failed_tests/$total_tests failed"
+    return $failed_tests
+end
+
 function test_git_wrm_dirty_check --description "Test git-wrm refuses dirty worktrees unless --force"
     set -l test_functions_dir "$FISH_FUNCTIONS_DIR"
     if test -z "$test_functions_dir"
@@ -4270,6 +4391,11 @@ function run_functional_tests --description "Run all functional tests"
     echo ""
 
     test_git_wrm_dirty_check
+    set total_failed (math $total_failed + $status)
+
+    echo ""
+
+    test_git_wrm_head_recheck
     set total_failed (math $total_failed + $status)
 
     echo ""

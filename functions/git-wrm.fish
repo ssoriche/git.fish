@@ -33,6 +33,10 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #      uncommitted would be lost. --dry-run reports the same verdict and
     #      exit status without removing anything, so it answers "would this
     #      worktree be removed?"
+    #   8. Just before removing, read HEAD and the branch again; if either
+    #      changed since step 4 (a commit or checkout during the fetch),
+    #      stop with exit 5, even with --force. A forced branch delete only
+    #      succeeds while the branch still points at the checked commit
     #
     # OPTIONS
     #   -n, --dry-run        Show what would be removed without actually removing anything
@@ -80,6 +84,7 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #   3    Commits not merged upstream (use --force to override); also
     #        used when the worktree is both unmerged and has uncommitted changes
     #   4    Merged, but has uncommitted changes (use --force to override)
+    #   5    The worktree's HEAD or branch changed during the check; rerun
     #   130  Interrupted (Ctrl-C during the fetch)
 
     # Parse command line arguments
@@ -405,6 +410,21 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
                 printf "WARNING: Discarding %d uncommitted change(s)!\n" $dirty_count
             end
 
+            # The checks above judged the HEAD read at the start. If a commit or
+            # checkout happened since (e.g. during the fetch), that verdict does
+            # not cover it, so stop even with --force: nobody approved losing it.
+            set -l head_now (git -C "$worktree_path" rev-parse HEAD 2>/dev/null)
+            set -l branch_now (git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null)
+            if test "$head_now" != "$head_commit"; or test "$branch_now" != "$current_branch_name"
+                printf "\nRefusing to remove worktree: it changed during the check.\n"
+                printf "  HEAD was %s (%s), now %s (%s).\n" \
+                    (string sub -l 8 -- "$head_commit") "$current_branch_name" \
+                    (string sub -l 8 -- "$head_now") "$branch_now"
+                printf "Rerun git wrm to check it again.\n"
+                popd >/dev/null
+                return 5
+            end
+
             printf "Removing worktree '%s'...\n" $worktree_name
             # --force is always passed: the checks above are the gate, and git
             # refuses to remove any worktree with initialized submodules without it.
@@ -419,8 +439,12 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
                     if git branch --list "$current_branch_name" | string match -q "*$current_branch_name*"
                         if git branch -d "$current_branch_name" >/dev/null 2>&1
                             printf "✓ Successfully deleted local branch: %s\n" $current_branch_name
-                        else if git branch -D "$current_branch_name" >/dev/null 2>&1
-                            # -d refuses squash/rebase-merged branches; say why -D was needed
+                        else if git update-ref -d "refs/heads/$current_branch_name" \
+                                "$head_commit" >/dev/null 2>&1
+                            # -d refuses squash/rebase-merged branches, so force the delete,
+                            # but only while the branch still points at the checked commit
+                            # (unlike branch -D, update-ref with an old value refuses a
+                            # branch that moved). Say why the force was needed.
                             if test $commit_found = true
                                 printf "✓ Deleted local branch: %s (%s)\n" $current_branch_name $merged_how
                             else

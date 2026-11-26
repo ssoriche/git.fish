@@ -302,6 +302,10 @@ git wrm --no-forge ~/worktrees/feature-branch
 - Refuses worktrees with uncommitted changes (modified or untracked files;
   ignored files don't count), listing them and exiting 4, so `--dry-run`
   tells you whether a worktree would actually be removed
+- Reads HEAD again just before removing and stops with exit 5, even with
+  `--force`, if a commit or checkout happened during the fetch, so it never
+  removes work it did not check; the branch is deleted only while it still
+  points at the checked commit
 - Smart upstream branch detection
 - Force option for override (with warnings)
 - **Automatically deletes associated local branch** (unless `--no-delete-branch` is used)
