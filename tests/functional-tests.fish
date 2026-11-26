@@ -562,6 +562,29 @@ function test_git_wrm_head_recheck --description "Test git-wrm stops when HEAD m
         set failed_tests (math $failed_tests + 1)
     end
 
+    # Test 5b: a branch another worktree is bisecting (detached HEAD) is kept too
+    echo "Test 5b: git-wrm keeps a branch that another worktree is bisecting..."
+    set total_tests (math $total_tests + 1)
+    set -l bisect_wt /tmp/git-fish-wrmh-bisect-(random)
+    set -l bisect_wt2 /tmp/git-fish-wrmh-bisect2-(random)
+    rm -rf "$bisect_wt" "$bisect_wt2"
+    git -C "$main_dir" worktree add -b bisectwt "$bisect_wt" >/dev/null 2>&1
+    git -C "$bisect_wt" commit --allow-empty -m "Bisect 1" >/dev/null 2>&1
+    git -C "$bisect_wt" commit --allow-empty -m "Bisect 2" >/dev/null 2>&1
+    git -C "$main_dir" worktree add --force "$bisect_wt2" bisectwt >/dev/null 2>&1
+    git -C "$bisect_wt2" bisect start bisectwt main >/dev/null 2>&1
+    set -l bisect_state (git -C "$bisect_wt2" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    git-wrm --force "$bisect_wt" >/dev/null 2>&1
+    set rc $status
+    if test "$bisect_state" = HEAD; and test $rc -eq 0; and not test -d "$bisect_wt"
+        and git -C "$main_dir" rev-parse --verify -q refs/heads/bisectwt >/dev/null
+        echo "✅ git-wrm removed the worktree and kept the branch under bisect"
+    else
+        echo "❌ git-wrm should keep a branch being bisected elsewhere: exit=$rc head=$bisect_state"
+        set failed_tests (math $failed_tests + 1)
+    end
+    git -C "$bisect_wt2" bisect reset >/dev/null 2>&1
+
     # Restore the real fetch runner: fish does not autoload it again after -e
     functions -e _git_fetch_progress
     source $test_functions_dir/_git_fetch_progress.fish
@@ -571,8 +594,10 @@ function test_git_wrm_head_recheck --description "Test git-wrm stops when HEAD m
     git -C "$main_dir" worktree remove --force "$shared_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$shared_wt2" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$dry_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree remove --force "$bisect_wt" >/dev/null 2>&1
+    git -C "$main_dir" worktree remove --force "$bisect_wt2" >/dev/null 2>&1
     rm -rf "$remote_dir" "$main_dir" "$race_wt" "$clean_wt" "$forced_wt" "$shared_wt" \
-        "$shared_wt2" "$dry_wt"
+        "$shared_wt2" "$dry_wt" "$bisect_wt" "$bisect_wt2"
 
     echo "📊 git-wrm HEAD recheck results: $failed_tests/$total_tests failed"
     return $failed_tests
