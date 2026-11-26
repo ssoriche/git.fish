@@ -437,14 +437,19 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
 
                     # Check if the branch exists locally
                     if git branch --list "$current_branch_name" | string match -q "*$current_branch_name*"
-                        if git branch -d "$current_branch_name" >/dev/null 2>&1
-                            printf "✓ Successfully deleted local branch: %s\n" $current_branch_name
+                        # The checks above are the gate (branch -d's own ancestry test
+                        # refuses squash/rebase-merged branches), so delete with
+                        # update-ref, and only while the branch still points at the
+                        # checked commit: unlike branch -d/-D it refuses a branch that
+                        # moved. It skips branch -D's checks, so keep the two that
+                        # matter: a branch another worktree has checked out stays, and
+                        # the branch's config section goes with it.
+                        if git worktree list --porcelain \
+                                | string match -q -- "branch refs/heads/$current_branch_name"
+                            printf "Keeping local branch '%s': another worktree has it checked out.\n" $current_branch_name
                         else if git update-ref -d "refs/heads/$current_branch_name" \
                                 "$head_commit" >/dev/null 2>&1
-                            # -d refuses squash/rebase-merged branches, so force the delete,
-                            # but only while the branch still points at the checked commit
-                            # (unlike branch -D, update-ref with an old value refuses a
-                            # branch that moved). Say why the force was needed.
+                            git config --remove-section "branch.$current_branch_name" >/dev/null 2>&1
                             if test $commit_found = true
                                 printf "✓ Deleted local branch: %s (%s)\n" $current_branch_name $merged_how
                             else
