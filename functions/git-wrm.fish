@@ -33,7 +33,8 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
     #      uncommitted would be lost. --dry-run reports the same verdict and
     #      exit status without removing anything, so it answers "would this
     #      worktree be removed?"
-    #   8. Just before removing, read HEAD and the branch again; if either
+    #   8. Just before removing (or giving the --dry-run verdict), read HEAD
+    #      and the branch again; if either
     #      changed since step 4 (a commit or checkout during the fetch),
     #      stop with exit 5, even with --force. A forced branch delete only
     #      succeeds while the branch still points at the checked commit
@@ -383,6 +384,22 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             return 2
         end
 
+        # The checks above judged the HEAD read at the start. If a commit or
+        # checkout happened since (e.g. during the fetch), that verdict does
+        # not cover it, so stop even with --force: nobody approved losing it.
+        # Done before the --dry-run split so both modes give the same verdict.
+        set -l head_now (git -C "$worktree_path" rev-parse HEAD 2>/dev/null)
+        set -l branch_now (git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null)
+        if test "$head_now" != "$head_commit"; or test "$branch_now" != "$current_branch_name"
+            printf "\nRefusing to remove worktree: it changed during the check.\n"
+            printf "  HEAD was %s (%s), now %s (%s).\n" \
+                (string sub -l 8 -- "$head_commit") "$current_branch_name" \
+                (string sub -l 8 -- "$head_now") "$branch_now"
+            printf "Rerun git wrm to check it again.\n"
+            popd >/dev/null
+            return 5
+        end
+
         if set -q _flag_dry_run
             if test $commit_found = true
                 printf "\nWould remove worktree '%s' (%s).\n" $worktree_name $merged_how
@@ -408,21 +425,6 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
             end
             if test $dirty_count -gt 0
                 printf "WARNING: Discarding %d uncommitted change(s)!\n" $dirty_count
-            end
-
-            # The checks above judged the HEAD read at the start. If a commit or
-            # checkout happened since (e.g. during the fetch), that verdict does
-            # not cover it, so stop even with --force: nobody approved losing it.
-            set -l head_now (git -C "$worktree_path" rev-parse HEAD 2>/dev/null)
-            set -l branch_now (git -C "$worktree_path" rev-parse --abbrev-ref HEAD 2>/dev/null)
-            if test "$head_now" != "$head_commit"; or test "$branch_now" != "$current_branch_name"
-                printf "\nRefusing to remove worktree: it changed during the check.\n"
-                printf "  HEAD was %s (%s), now %s (%s).\n" \
-                    (string sub -l 8 -- "$head_commit") "$current_branch_name" \
-                    (string sub -l 8 -- "$head_now") "$branch_now"
-                printf "Rerun git wrm to check it again.\n"
-                popd >/dev/null
-                return 5
             end
 
             printf "Removing worktree '%s'...\n" $worktree_name

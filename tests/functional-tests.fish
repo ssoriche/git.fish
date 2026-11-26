@@ -490,6 +490,23 @@ function test_git_wrm_head_recheck --description "Test git-wrm stops when HEAD m
         echo "❌ git-wrm --force should still stop when HEAD moves: exit=$rc"
         set failed_tests (math $failed_tests + 1)
     end
+
+    # Test 2b: --dry-run gives the same verdict as a real run
+    echo "Test 2b: git-wrm --dry-run also exits 5 when HEAD moves..."
+    set total_tests (math $total_tests + 1)
+    # A fresh merged worktree: race already holds unmerged commits from Tests 1-2
+    set -l dry_wt /tmp/git-fish-wrmh-dry-(random)
+    rm -rf "$dry_wt"
+    git -C "$main_dir" worktree add -b drywt "$dry_wt" >/dev/null 2>&1
+    set -g _wrmh_race_wt "$dry_wt"
+    git-wrm --dry-run "$dry_wt" >/dev/null 2>&1
+    set rc $status
+    if test $rc -eq 5; and test -d "$dry_wt"
+        echo "✅ git-wrm --dry-run reported the moved worktree with exit 5"
+    else
+        echo "❌ git-wrm --dry-run should match the real run's exit 5: exit=$rc"
+        set failed_tests (math $failed_tests + 1)
+    end
     set -e _wrmh_race_wt
 
     # Test 3: without a race, a clean merged worktree is still removed
@@ -553,7 +570,9 @@ function test_git_wrm_head_recheck --description "Test git-wrm stops when HEAD m
     git -C "$main_dir" worktree remove --force "$clean_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$shared_wt" >/dev/null 2>&1
     git -C "$main_dir" worktree remove --force "$shared_wt2" >/dev/null 2>&1
-    rm -rf "$remote_dir" "$main_dir" "$race_wt" "$clean_wt" "$forced_wt" "$shared_wt" "$shared_wt2"
+    git -C "$main_dir" worktree remove --force "$dry_wt" >/dev/null 2>&1
+    rm -rf "$remote_dir" "$main_dir" "$race_wt" "$clean_wt" "$forced_wt" "$shared_wt" \
+        "$shared_wt2" "$dry_wt"
 
     echo "📊 git-wrm HEAD recheck results: $failed_tests/$total_tests failed"
     return $failed_tests
