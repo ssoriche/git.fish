@@ -440,25 +440,29 @@ function git-wrm --description "Remove a git worktree after verifying commits ar
                     # Check if the branch exists locally
                     if git branch --list "$current_branch_name" | string match -q "*$current_branch_name*"
                         # The checks above are the gate (branch -d's own ancestry test
-                        # refuses squash/rebase-merged branches), so delete with
-                        # update-ref, and only while the branch still points at the
-                        # checked commit: unlike branch -d/-D it refuses a branch that
-                        # moved. It skips branch -D's checks, so keep the two that
-                        # matter: a branch another worktree has checked out stays, and
-                        # the branch's config section goes with it.
+                        # refuses squash/rebase-merged branches), so delete with -D, but
+                        # only while the branch still points at the checked commit. -D
+                        # keeps git's own protection: it refuses a branch any worktree
+                        # has checked out or is rebasing or bisecting, and it removes
+                        # the branch's config section.
+                        set -l branch_tip (git rev-parse -q --verify \
+                            "refs/heads/$current_branch_name" 2>/dev/null)
+                        set -l delete_err
                         if git worktree list --porcelain \
                                 | string match -q -- "branch refs/heads/$current_branch_name"
                             printf "Keeping local branch '%s': another worktree has it checked out.\n" $current_branch_name
-                        else if git update-ref -d "refs/heads/$current_branch_name" \
-                                "$head_commit" >/dev/null 2>&1
-                            git config --remove-section "branch.$current_branch_name" >/dev/null 2>&1
+                        else if test "$branch_tip" != "$head_commit"
+                            printf "Keeping local branch '%s': it moved to %s after the check.\n" \
+                                $current_branch_name (string sub -l 8 -- "$branch_tip")
+                        else if set delete_err (git branch -D "$current_branch_name" 2>&1)
                             if test $commit_found = true
                                 printf "✓ Deleted local branch: %s (%s)\n" $current_branch_name $merged_how
                             else
                                 printf "✓ Force deleted local branch: %s (had unmerged changes)\n" $current_branch_name
                             end
                         else
-                            printf "Warning: Failed to delete local branch '%s'. You may need to delete it manually.\n" $current_branch_name >&2
+                            printf "Warning: Kept local branch '%s': %s\n" $current_branch_name \
+                                (string replace -r '^error: ' '' -- $delete_err[1]) >&2
                         end
                     else
                         printf "Local branch '%s' not found, skipping deletion.\n" $current_branch_name
