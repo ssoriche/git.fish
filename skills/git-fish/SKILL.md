@@ -69,9 +69,13 @@ text is the source of truth; do not guess flags.
   `git wlist` is an extra overview, not a substitute: it does not show local
   branches without a worktree, which `bclean` can delete.
 - `git wrm --dry-run <name>` gives the verdict without removing anything:
-  exit 0 means it would be removed, exit 3 means the work is not merged, and
+  exit 0 means it would be removed, exit 3 means the work is not merged,
   exit 4 means it is merged but has uncommitted changes (listed in the
-  output). On 3 or 4, stop and ask the user.
+  output), and exit 5 means a commit or checkout happened in the worktree
+  while `wrm` was checking it. On 3 or 4, stop and ask the user. On 5, run
+  `--dry-run` again and act on that verdict; if it keeps returning 5,
+  something is still working in that worktree, so stop and tell the user.
+  A real `wrm` can also exit 5, even with `--force`, having removed nothing.
 - Removing a worktree deletes everything in it that is not committed. If the
   installed `wrm` predates exit 4 (its `--help` does not list it), also run
   `git -C <path> status --porcelain --untracked-files=all` first (the flag
